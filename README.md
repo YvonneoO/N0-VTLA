@@ -16,7 +16,9 @@
   <img src="https://img.shields.io/badge/Python-3.11-3776ab.svg" alt="Python 3.11">
 </p>
 
-<p><strong>🔥 𝒩₀-VTLA has been released — including pretrained checkpoints, the post-training toolkit, and inference servers.</strong></p>
+<h2>🔥 𝒩₀-VTLA Has Been Released! 🔥</h2>
+
+<p><strong>Pretrained checkpoints, the post-training toolkit, and inference servers are now available.</strong></p>
 
 <img src="docs/media/vtla-teaser.webp" width="860" alt="N0-VTLA: large-scale visuo-tactile pretraining with latent tactile tokens">
 
