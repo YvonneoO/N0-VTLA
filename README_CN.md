@@ -16,6 +16,8 @@
   <img src="https://img.shields.io/badge/Python-3.11-3776ab.svg" alt="Python 3.11">
 </p>
 
+<p><strong>🔥 𝒩₀-VTLA 已正式发布，包括预训练 checkpoint、后训练工具链和推理服务。</strong></p>
+
 <img src="docs/media/vtla-teaser.webp" width="860" alt="N0-VTLA">
 
 </div>
