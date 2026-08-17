@@ -13,6 +13,7 @@
   <a href="https://arxiv.org/abs/2607.23782"><img src="https://img.shields.io/badge/Paper-arXiv-b31b1b.svg" alt="Paper"></a>
   <a href="https://huggingface.co/NeoteAI/n0-vtla-base"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Weights-n0--vtla--base-ffce3a.svg" alt="Weights"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-CC%20BY--SA%204.0-green.svg" alt="License: CC BY-SA 4.0"></a>
+  <a href="mailto:hengzzzhou@gmail.com"><img src="https://img.shields.io/badge/Contact-hengzzzhou%40gmail.com-0a66c2.svg" alt="Contact: hengzzzhou@gmail.com"></a>
   <img src="https://img.shields.io/badge/Python-3.11-3776ab.svg" alt="Python 3.11">
 </p>
 
@@ -162,6 +163,10 @@ stride drops the tail of every chunk, and the gripper-close commands live in tha
 Large-scale pretraining on NeoData, the three-stage training recipe, the deployment-time (RL)
 improvement pipeline, and the experimental results are described in the
 [paper](https://arxiv.org/abs/2607.23782).
+
+## Contact
+
+For questions about $\mathcal{N}_0$-VTLA, you can contact [hengzzzhou@gmail.com](mailto:hengzzzhou@gmail.com).
 
 ## Citation
 
