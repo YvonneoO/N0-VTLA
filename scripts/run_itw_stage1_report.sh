@@ -19,6 +19,7 @@ fi
 if [[ ! -f "$DATA/validation/meta/info.json" ]]; then
   python scripts/itw_tactile_smoke_adapter.py "$ROOT/n0vtla_itw_raw/itw08-03" "$DATA/validation" \
     --extra-raw-root "$ROOT/n0vtla_itw_raw/itw08-06" --extra-raw-root "$ROOT/n0vtla_itw_raw/itw08-07" \
+    --extra-raw-root "$ROOT/n0vtla_itw_raw/itw08-10" --extra-raw-root "$ROOT/n0vtla_itw_raw/itw08-11" \
     --normalization "$NORM" --split-manifest "$SPLIT" --split validation --max-episodes 10
 fi
 if [[ ! -f "$REPORT/before/metrics.json" ]]; then

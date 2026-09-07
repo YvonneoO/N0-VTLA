@@ -423,6 +423,9 @@ def main() -> None:
                 break
         episodes = accepted
         if len(episodes) < args.max_episodes:
+            (args.output_dir / "selection_failure.json").write_text(json.dumps({
+                "split": args.split, "accepted": [str(p) for p in episodes], "rejected": rejected,
+            }, indent=2))
             raise ValueError(f"Only {len(episodes)} aligned {args.split} episodes available")
     else:
         episodes = episodes[:args.max_episodes]
