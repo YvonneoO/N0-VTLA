@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 
 import cv2
 import numpy as np
@@ -122,6 +123,43 @@ def signed_heatmap(field, limit=0.1):
     return cv2.resize(np.rint(rgb * 255).astype(np.uint8), (224, 224), interpolation=cv2.INTER_NEAREST)
 
 
+def plot_report(root, report, log_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    entries = []
+    for line in log_path.read_text().splitlines():
+        if "stage1_nce=" not in line:
+            continue
+        fields = dict(re.findall(r"(step|stage1_nce|stage1_recon|stage1_total)=([0-9.eE+-]+)", line))
+        if len(fields) == 4:
+            entries.append({k: float(v) for k, v in fields.items()})
+    (root / "training_metrics.json").write_text(json.dumps(entries, indent=2))
+    if entries:
+        fig, axes = plt.subplots(1, 2, figsize=(10, 3.6), layout="constrained")
+        for ax, key, title in zip(axes, ("stage1_nce", "stage1_recon"), ("Training InfoNCE", "Training reconstruction L1")):
+            ax.plot([e["step"] for e in entries], [e[key] for e in entries], color="#267f77")
+            ax.set(title=title, xlabel="Completed updates", ylabel="Logged interval mean")
+            ax.grid(alpha=.2)
+        fig.savefig(root / "training_curves.png", dpi=160)
+        plt.close(fig)
+    fig, axes = plt.subplots(1, 2, figsize=(10, 3.8), layout="constrained")
+    for ax, key, zero_key, title in zip(axes, ("mae", "active_mae"), ("zero_mae", "active_zero_mae"),
+                                      ("All validation samples", "Active-change subset")):
+        vals = [report["before"][key], report["after"][key], report["after"][zero_key]]
+        if any(v is None for v in vals):
+            ax.text(.5, .5, "No active samples", ha="center", transform=ax.transAxes)
+            continue
+        ax.bar(["Before", "After", "Zero change"], vals, color=["#7b8490", "#267f77", "#bf6b39"])
+        ax.set(title=title, ylabel="MAE (log scale; lower is better)", yscale="log")
+        for i, value in enumerate(vals):
+            ax.annotate(f"{value:.5f}", (i, value), xytext=(0, 4), textcoords="offset points", ha="center", fontsize=9)
+        ax.margins(y=.2)
+    fig.savefig(root / "validation_mae.png", dpi=160)
+    plt.close(fig)
+
+
 def compare(args):
     import imageio.v2 as imageio
     before_meta = json.loads((args.before / "metrics.json").read_text())
@@ -183,6 +221,9 @@ def compare(args):
             for cap in caps:
                 cap.release()
     (args.output / "comparison.json").write_text(json.dumps(report, indent=2))
+    log_path = args.after.parent / "training.log"
+    if log_path.is_file():
+        plot_report(args.output, report, log_path)
     print(json.dumps(report, indent=2))
 
 
