@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Render full-sensor hand previews from real arrays; not a training dataset.
+"""Legacy pressure/shear comparison previews; not the current training encoding.
+
+The current adapter uses itw_pressure.py and fixed pressure-only normalization.
 
 Alignment follows tacWAM/tujian_v2.py and cosmos_tactile/pad_data.py: common
 coverage of three cameras and both gloves, rational 30 Hz grid, nearest samples.

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Smoke-convert ITW tactile arrays into canonical N0-VTLA tactile videos.
+"""Convert ITW pressure arrays into canonical N0-VTLA tactile videos.
 
 This is intentionally a small adapter, not a training-ready converter.  It takes
 already-downloaded ITW episode folders and writes a LeRobot-like canonical
 dataset with:
 
-* head/wrist RGB videos copied into canonical RGB slots
-* left/right glove tactile NPZ arrays rasterized into canonical tactile videos
+* head/wrist RGB and tactile resampled to a common 30 Hz timeline
+* pressure-only hand videos with fixed tacWAM-style train-only normalization
 * zero state/action placeholders so the N0-VTLA data loader can inspect shapes
 
 ITW has human hand/glove signals rather than robot EEF state/actions, so the
@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Mapping
 import json
+import hashlib
 import math
 from pathlib import Path
 import shutil
@@ -304,7 +305,7 @@ def _video_feature() -> dict[str, Any]:
     }
 
 
-def _write_parquet(path: Path, *, length: int, episode_index: int, global_start: int) -> int:
+def _write_parquet(path: Path, *, length: int, episode_index: int, global_start: int, task_index: int = 0) -> int:
     state = np.zeros((length, CANONICAL_ACTION_DIM), dtype=np.float32)
     action = np.zeros((length, CANONICAL_ACTION_DIM), dtype=np.float32)
     action_mask = np.zeros((length, CANONICAL_ACTION_DIM), dtype=bool)
@@ -320,7 +321,7 @@ def _write_parquet(path: Path, *, length: int, episode_index: int, global_start:
             pa.array(frame_index.tolist(), type=pa.int64()),
             pa.array([episode_index] * length, type=pa.int64()),
             pa.array(index.tolist(), type=pa.int64()),
-            pa.array([0] * length, type=pa.int64()),
+            pa.array([task_index] * length, type=pa.int64()),
         ],
         names=[
             "observation.state",
@@ -375,13 +376,18 @@ def _info_json(total_episodes: int, total_frames: int, data_bytes: int, video_by
 
 
 def main() -> None:
+    from itw_pressure import aligned_timeline, load_normalization, write_aligned_rgb, write_pressure_video
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("raw_root", type=Path)
     parser.add_argument("output_dir", type=Path)
     parser.add_argument("--max-episodes", type=int, default=8)
     parser.add_argument("--overwrite", action="store_true")
-    parser.add_argument("--tactile-layout", choices=["grid", "hand"], default="grid")
+    parser.add_argument("--tactile-layout", choices=["grid", "hand"], default="hand")
+    parser.add_argument("--normalization", type=Path, required=True,
+                        help="Fixed tacWAM pad30 train-only pressure statistics JSON")
     args = parser.parse_args()
+    norm = load_normalization(args.normalization)
 
     if args.output_dir.exists():
         if not args.overwrite:
@@ -404,24 +410,34 @@ def main() -> None:
     data_bytes = 0
     video_bytes = 0
     total_frames = 0
-    task = _read_task(episodes[0])
+    tasks = []
+    alignment_reports = []
 
     for ep_idx, ep_dir in enumerate(episodes):
         chunk = ep_idx // CHUNK_SIZE
-        n_frames = min(_video_frame_count(ep_dir / "rgb_head.mp4"), _video_frame_count(ep_dir / "wrist_left.mp4"), _video_frame_count(ep_dir / "wrist_right.mp4"))
-        epochs = _load_video_epochs(ep_dir, "rgb_head", n_frames)[:n_frames]
-        if len(epochs) != n_frames:
-            epochs = np.arange(n_frames, dtype=np.float64) / DATASET_FPS
+        mapping, alignment = aligned_timeline(ep_dir)
+        n_frames = len(mapping["master_timestamp_ns"])
+        task = _read_task(ep_dir)
+        if task not in tasks:
+            tasks.append(task)
+        task_index = tasks.index(task)
+        audit_dir = args.output_dir / "alignment"
+        audit_dir.mkdir(exist_ok=True)
+        np.savez_compressed(audit_dir / f"episode_{ep_idx:06d}.npz", **mapping)
+        alignment_reports.append(dict(episode_index=ep_idx, source=ep_dir.name, streams=alignment))
 
         parquet_path = args.output_dir / "data" / f"chunk-{chunk:03d}" / f"episode_{ep_idx:06d}.parquet"
-        data_bytes += _write_parquet(parquet_path, length=n_frames, episode_index=ep_idx, global_start=total_frames)
+        data_bytes += _write_parquet(parquet_path, length=n_frames, episode_index=ep_idx,
+                                    global_start=total_frames, task_index=task_index)
 
         for key, filename in RGB_KEYS.items():
             dst = args.output_dir / "videos" / f"chunk-{chunk:03d}" / key / f"episode_{ep_idx:06d}.mp4"
-            video_bytes += _copy_video(ep_dir / filename, dst)
+            video_bytes += write_aligned_rgb(ep_dir / filename, dst, mapping[Path(filename).stem + "_frame_index"])
         for key, filename in TACTILE_KEYS.items():
             dst = args.output_dir / "videos" / f"chunk-{chunk:03d}" / key / f"episode_{ep_idx:06d}.mp4"
-            video_bytes += _rasterize_tactile_npz(ep_dir / filename, epochs, dst, layout=args.tactile_layout)
+            hand = "left" if filename.startswith("left") else "right"
+            video_bytes += write_pressure_video(ep_dir / filename, dst, mapping[hand + "_index"],
+                                                norm, hand=hand, layout=args.tactile_layout)
 
         timestamp = np.arange(n_frames, dtype=np.float32) / np.float32(DATASET_FPS)
         frame_index = np.arange(n_frames, dtype=np.int64)
@@ -437,7 +453,7 @@ def main() -> None:
                     "frame_index": _quantile_stats(frame_index),
                     "episode_index": _quantile_stats(np.full(n_frames, ep_idx, dtype=np.int64)),
                     "index": _quantile_stats(np.arange(total_frames, total_frames + n_frames, dtype=np.int64)),
-                    "task_index": _quantile_stats(np.zeros(n_frames, dtype=np.int64)),
+                    "task_index": _quantile_stats(np.full(n_frames, task_index, dtype=np.int64)),
                 },
             }
         )
@@ -446,14 +462,24 @@ def main() -> None:
 
     meta = args.output_dir / "meta"
     meta.mkdir(parents=True, exist_ok=True)
-    _write_jsonl(meta / "tasks.jsonl", [{"task_index": 0, "task": task}])
+    _write_jsonl(meta / "tasks.jsonl", [{"task_index": i, "task": task} for i, task in enumerate(tasks)])
     _write_jsonl(meta / "episodes.jsonl", episodes_rows)
     _write_jsonl(meta / "episodes_stats.jsonl", episodes_stats_rows)
+    info = _info_json(len(episodes), total_frames, data_bytes, video_bytes, video_keys)
+    info["total_tasks"] = len(tasks)
     (meta / "info.json").write_text(
-        json.dumps(_info_json(len(episodes), total_frames, data_bytes, video_bytes, video_keys), ensure_ascii=False, indent=2),
+        json.dumps(info, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     (meta / "source_episodes.json").write_text(json.dumps(source_map, ensure_ascii=False, indent=2), encoding="utf-8")
+    (meta / "tactile_normalization.json").write_text(json.dumps(norm, indent=2))
+    (meta / "tactile_encoding.json").write_text(json.dumps({
+        "version": "pressure_tacwam_v1", "channels": "R=G=B=pressure_gray", "shear_used": False,
+        "normalized_range": [-1, 8], "gray_mapping": "round((clip(normal,-1,8)+1)*255/9)",
+        "zero_gray": 28, "background_rgb": [0, 0, 0], "lossy_video": True,
+        "normalization_sha256": hashlib.sha256(args.normalization.read_bytes()).hexdigest(),
+        "alignment": alignment_reports,
+    }, indent=2))
     print(f"wrote {len(episodes)} episodes / {total_frames} frames to {args.output_dir}")
     print(f"video keys: {', '.join(video_keys)}")
     print("note: state/action are zero placeholders; this is tactile-video smoke data only")

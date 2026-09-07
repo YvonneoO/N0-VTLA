@@ -35,16 +35,59 @@ needing real state conditioning should use a separately reviewed data path.
 
 Existing hyperparameters are retained. This is not an exact reproduction claim.
 
+### ITW pressure-only data (tacWAM V10/V11)
+
+The current adapter uses only normal pressure, never shear. It follows tacWAM
+commit `1e4ad399718e8adc80aaf8b0185d17cd0450766f`,
+`tacwam/cosmos_tactile/pad_data.py::fit_pad_normalization`:
+30 fixed physical-pad parameter sets (left 15, then right 15), fitted on train
+recordings only. Baseline is P5 and raw scale is P99.9 minus P5. Scale is floored
+at 5% of the median positive raw scale (with the reference's numerical floors).
+Pressure is `clip((raw - baseline) / scale, -1, 8)`. Four sampled frames per hand
+per recording and seed 42 match the reference defaults. No per-episode or
+per-frame rescaling is performed; the same physical pad uses the same parameters
+in every episode. Left/right pads do not share a single maximum.
+
+Fit statistics explicitly, using the official recording split, then reuse the
+resulting immutable JSON for every conversion. A fit on the downloaded 08/03
+training subset is a development version, not the original full-corpus V10 fit.
+Do not mix datasets rendered using different statistics; a later refit requires
+a new data version and re-rendering. Original tacWAM normalization JSON files
+can also be supplied directly when the exact original parameter values are wanted.
+
+```bash
+python scripts/itw_pressure.py --raw-root /path/to/itw08-03 \
+  --split-manifest /path/to/recording_split_v7_post0802.json \
+  --output /path/to/normalization_0803_train_v1.json
+python scripts/itw_tactile_smoke_adapter.py /path/to/itw08-03 /path/to/new_dataset \
+  --normalization /path/to/normalization_0803_train_v1.json --max-episodes 2
+```
+
+MP4 transport is additional to tacWAM's float normalization: R=G=B is
+`round((normal + 1) * 255 / 9)`, with black outside the fixed hand-pad layout.
+Normalized zero maps to gray 28, not cyan. Quantization is about 0.0353 normalized
+units per code value; H.264 CRF18 introduces further loss. Weak contacts can be
+attenuated. This is not numerically identical to feeding tacWAM float tensors,
+and a faint preview is not grounds for silently boosting each episode.
+
+All three RGB streams and both tactile streams are resampled to the shared
+30 Hz overlap using nearest timestamps (ties left), with 17.5 ms camera and
+20 ms tactile error gates. The initial converter rejects an entire episode
+with bad alignment, unlike tacWAM's window-level filtering. It never deletes
+individual ticks and compresses time. Source indices/timestamps and encoding
+provenance are saved alongside the canonical metadata. State/action remain
+zero interface placeholders for action-free Stage 1, not robot training labels.
+
 | Item | Current implementation | Paper / limitation |
 |---|---|---|
 | Latent count | 5 | Paper uses 10. Mean-pooled InfoNCE supports either, but the architectures differ. |
 | Temperature | 0.07 | Equations 3-4 use unscaled cosine logits, equivalent to temperature 1. Temperature scaling is a deviation, not a requirement for learning. |
 | Target gradient | Detached, shared projection | Stop-gradient is our assumption; the paper does not specify it explicitly. Targets change as the shared projection updates through the current branch. No EMA target is used. |
-| Reconstruction | View/channel-averaged 8x8 field, two-layer MLP, weight 0.5 | Head details, resolution, aggregation, and weight are not fully specified. Pressure/shear channels can cancel under grayscale averaging. |
+| Reconstruction | View/channel-averaged 8x8 field, two-layer MLP, weight 0.5 | Head details, resolution, aggregation, and weight are not fully specified. Current pressure-only RGB channels are identical, avoiding the old pressure/shear cancellation. |
 | Initialization | Load compatible base, including tactile weights if present | Section 4.2 describes a newly initialized tactile pathway. Loading an already-grounded pathway is continuation, not that initialization. |
 | LR, batch, duration | Existing defaults unchanged | Not verified as the paper's Stage-1 hyperparameters. |
 | EMA | Not implemented | The inherited `ema_decay` field is not applied; checkpoints contain online weights. |
-| Sensor | Rasterized human pressure/shear arrays | Paper uses vision-based tactile sensors; rasterization changes the distribution seen by frozen DINOv2. |
+| Sensor | Rasterized human pressure arrays | Paper uses vision-based tactile sensors; rasterization changes the distribution seen by frozen DINOv2. |
 
 Stop-gradient and grayscale reconstruction are retained experimental choices, not claimed
 to be required by related work. Validate these assumptions before interpreting losses as
