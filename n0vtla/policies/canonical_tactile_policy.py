@@ -40,6 +40,26 @@ _RIGHT_RGB = "right_wrist_0_rgb"
 
 
 @dataclasses.dataclass(frozen=True)
+class Stage1ObservationOnly(transforms.DataTransformFn):
+    """Supply interface placeholders for human data, without reading robot targets.
+
+    The inherited Pi0.5 tokenizer still sees a constant zero state. This is an explicit
+    human-data adaptation, not measured robot proprioception or action supervision.
+    """
+
+    action_dim: int
+    action_horizon: int
+
+    def __call__(self, data: dict) -> dict:
+        data = dict(data)
+        data.pop("actions", None)
+        data.pop("action_mask", None)
+        data["observation.state"] = np.zeros(self.action_dim, dtype=np.float32)
+        data["action"] = np.zeros((self.action_horizon, self.action_dim), dtype=np.float32)
+        return data
+
+
+@dataclasses.dataclass(frozen=True)
 class CanonicalTactileInputs(transforms.DataTransformFn):
     """Canonical → model input for the tactile action-predictor path.
 

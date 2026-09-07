@@ -35,7 +35,14 @@ credentials*.json
 # Manuscript sources live alongside the code but are never part of the release.
 # Anchored and capitalised to avoid shadowing the n0vtla/ package on
 # case-insensitive filesystems.
+# CAUTION: this does NOT actually work on macOS/Windows -- git defaults to
+# core.ignorecase=true there, so `/N0VTLA/` silently matches (and hides every NEW,
+# not-yet-tracked file under) the real `/n0vtla/` package too. Found 2026-09-07 when a
+# freshly-added source file under n0vtla/ was silently missing from `git status` on a Mac
+# clone. Un-ignore the real package explicitly until this pattern is renamed to something
+# that can't collide (e.g. a directory name that isn't just a case variant of `n0vtla`).
 /N0VTLA/
+!/n0vtla/
 
 # data / assets (norm stats are computed per-dataset, provided out-of-band)
 # Anchored to the repo root so source packages like src/n0vtla/models/ stay tracked.

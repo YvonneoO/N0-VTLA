@@ -471,10 +471,20 @@ class LeRobotCanonicalTaskTactileDataConfig(DataConfigFactory):
     tolerance_s: float = 0.04
     use_delta_eef_actions: bool = True
     action_sequence_keys: Sequence[str] = ("action",)
+    # >0: also load tac_{t+offset} as the Stage-1 z*/Dbar target frame (paper Sec 4.2; see
+    # n0vtla_policy.py::N0VTLAPolicy._build_future_target and
+    # docs/STAGE1_PREDICTOR_PRETRAINING.md). 0 (default) -> 2-frame [baseline, current] stack,
+    # byte-identical to before this field existed. Set to the action horizon H (50) to match the
+    # paper's target definition.
+    future_frame_offset: int = 0
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         repo_ids = (self.repo_id,)
+
+        stage1 = bool(getattr(model_config, "stage1_pretrain_enabled", False))
+        if stage1 and self.future_frame_offset <= 0:
+            raise ValueError("Stage 1 requires a positive future_frame_offset")
 
         repack_map: dict[str, str] = {key: key for key in cs.IMAGE_KEYS}
         repack_map["observation.state"] = "observation.state"
@@ -492,7 +502,17 @@ class LeRobotCanonicalTaskTactileDataConfig(DataConfigFactory):
         stats_transforms: list[_transforms.DataTransformFn] = [
             _transforms.RepackTransform({"state": "observation.state", "actions": "action"})
         ]
-        if self.use_delta_eef_actions:
+        if stage1:
+            for key in ("observation.state", "action", "action_mask"):
+                repack_map.pop(key, None)
+            data_transforms = _transforms.Group(inputs=[
+                canonical_tactile_policy.Stage1ObservationOnly(
+                    model_config.action_dim, model_config.action_horizon
+                ),
+                *data_transforms.inputs,
+            ])
+            stats_transforms = []
+        elif self.use_delta_eef_actions:
             delta_action_mask = _transforms.make_bool_mask(9, -1, 9, -1, -12)
             data_transforms = data_transforms.push(
                 inputs=[_transforms.DeltaActions(delta_action_mask)],
@@ -503,6 +523,8 @@ class LeRobotCanonicalTaskTactileDataConfig(DataConfigFactory):
 
         fps = _get_local_dataset_fps(self.repo_id)
         tactile_offsets = [-_LATENT_BASELINE_FRAMES / fps, 0.0]
+        if self.future_frame_offset > 0:
+            tactile_offsets = tactile_offsets + [self.future_frame_offset / fps]
         extra_delta_timestamps = {
             key: list(tactile_offsets) for key in cs.TACTILE_KEYS
         }
@@ -513,7 +535,7 @@ class LeRobotCanonicalTaskTactileDataConfig(DataConfigFactory):
             repack_transforms=repack_transforms,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
-            action_sequence_keys=self.action_sequence_keys,
+            action_sequence_keys=() if stage1 else self.action_sequence_keys,
             stats_transforms=stats_transforms,
             tolerance_s=self.tolerance_s,
             extra_delta_timestamps=extra_delta_timestamps,
@@ -860,6 +882,65 @@ _CONFIGS = [
             peak_lr=2e-5,
             decay_steps=20_000,
             decay_lr=2e-6,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        pytorch_weight_path=os.environ.get(
+            "VTLA_PRETRAINED_CHECKPOINT", "/path/to/checkpoints/vtla_pretrained"
+        ),
+        num_train_steps=20_000,
+        wandb_enabled=False,
+    ),
+    # Stage-1 predictor-grounding pretraining (paper Sec 4.2) -- action-FREE: trains only
+    # tactile_encoder.tactile_proj + tactile_predictor + tactile_recon_head against an InfoNCE +
+    # L1-recon future-tactile target, never touches ground-truth actions. Not part of the
+    # released repo; see docs/STAGE1_PREDICTOR_PRETRAINING.md for the full design writeup and
+    # scripts/train_stage1_predictor.py for the (separate, action-free) training loop that
+    # consumes this config. action_dim/action_horizon are inherited from Pi0Config only because
+    # N0VTLAPolicy subclasses PI0Pytorch; the Stage-1 loss never constructs the action suffix.
+    TrainConfig(
+        name="vtla_stage1_predictor_pretrain",
+        model=(
+            lambda: __import__(
+                "n0vtla.models_pytorch.n0vtla_policy", fromlist=["N0VTLAConfig"]
+            ).N0VTLAConfig(
+                pi05=True,
+                action_dim=32,
+                action_horizon=50,
+                pytorch_compile_mode=None,
+                tactile_predictor_enabled=True,
+                tactile_mode="latent",
+                n_latent=5,
+                predictor_arch="tactile_kv",
+                stage1_pretrain_enabled=True,
+                stage1_recon_grid=int(os.environ.get("VTLA_STAGE1_RECON_GRID", "8")),
+                stage1_lambda_rec=float(os.environ.get("VTLA_STAGE1_LAMBDA_REC", "0.5")),
+                stage1_temperature=float(os.environ.get("VTLA_STAGE1_TEMPERATURE", "0.07")),
+                tactile_image_keys=cs.TACTILE_SHORT_KEYS,
+            )
+        )(),
+        data=LeRobotCanonicalTaskTactileDataConfig(
+            repo_id=os.environ.get("VTLA_DATASET_PATH", "/path/to/datasets/canonical_tactile_task"),
+            tolerance_s=0.04,
+            use_delta_eef_actions=True,
+            default_prompt=os.environ.get("VTLA_DEFAULT_PROMPT", "Perform the task."),
+            # H=50 matches the paper's z* horizon (Eq. 2) and the model's action_horizon above;
+            # the two are independent config surfaces that happen to share the same paper symbol.
+            future_frame_offset=int(os.environ.get("VTLA_STAGE1_FUTURE_OFFSET", "50")),
+            assets=AssetsConfig(
+                asset_id=os.environ.get("VTLA_ASSET_ID", "canonical_tactile_task"),
+            ),
+        ),
+        batch_size=64,
+        num_workers=8,
+        log_interval=50,
+        save_interval=2_000,
+        keep_period=10_000,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=500,
+            peak_lr=1e-4,
+            decay_steps=20_000,
+            decay_lr=1e-5,
         ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,

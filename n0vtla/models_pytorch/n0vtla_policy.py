@@ -33,6 +33,8 @@ Predictor path (v0 — the unsupervised variant: no z* target and no separate pr
 """
 from __future__ import annotations
 
+import math
+
 import dataclasses
 
 import torch
@@ -118,6 +120,21 @@ class N0VTLAConfig(Pi0Config):
     # default so the running-training path is byte-unchanged; enable only AFTER
     # scripts/verify_prefix_cache.py confirms cache-on == cache-off (bf16-noise level).
     use_prefix_cache: bool = False
+
+    # --- Stage-1 predictor-grounding pretraining (paper Sec 4.2; NOT part of the released repo,
+    # see docs/STAGE1_PREDICTOR_PRETRAINING.md) ---
+    # Gates construction of ``tactile_recon_head`` and enables ``forward_stage1``. Requires
+    # tactile_predictor_enabled=True. Off by default -> state_dict key set byte-unchanged.
+    stage1_pretrain_enabled: bool = False
+    # Side length of the coarse (grid x grid) reconstruction target/output. Not specified by the
+    # paper -- our own choice (TactileReconHead / N0VTLAPolicy._build_future_target).
+    stage1_recon_grid: int = 8
+    # lambda_rec in the paper's L_1 = L_NCE + lambda_rec * L_rec (Eq. 5). Paper states
+    # lambda_rec > 0 but does not publish a value; ours to tune.
+    stage1_lambda_rec: float = 0.5
+    # Experimental temperature, retained for compatibility. Eq. 3-4 use unscaled cosine
+    # logits (temperature=1); 0.07 is a deviation, not a paper-specified default.
+    stage1_temperature: float = 0.07
 
     def load_pytorch(self, train_config, weight_path: str):
         """Serve/eval load path: build N0VTLAPolicy and load the trained weights.
@@ -269,6 +286,16 @@ class N0VTLAPolicy(PI0Pytorch):
         if self.g_to_expert:
             self.g_proj = nn.Linear(llm_dim, self.action_in_proj.out_features)
             self.g_gate = nn.Parameter(torch.zeros(1))
+
+        # Stage-1 predictor-grounding pretraining (see N0VTLAConfig.stage1_pretrain_enabled).
+        # Constructed ONLY when enabled, so every other config's state_dict key set is unaffected.
+        self.stage1_pretrain_enabled = bool(getattr(config, "stage1_pretrain_enabled", False))
+        if self.stage1_pretrain_enabled:
+            from n0vtla.models_pytorch.tactile_recon_head import TactileReconHead
+
+            self.tactile_recon_head = TactileReconHead(
+                hidden_dim=llm_dim, grid=int(getattr(config, "stage1_recon_grid", 8))
+            )
 
 
     # ------------------------------------------------------------------
@@ -569,6 +596,182 @@ class N0VTLAPolicy(PI0Pytorch):
             vl_ctx.to(torch.float32), g_f, g_mask=g_mask, vl_ctx_mask=prefix_pad_masks
         )   # (B, n_latent, llm_dim)
         return z, g, has_tac
+
+    # ------------------------------------------------------------------
+    # Stage-1 predictor-grounding pretraining (paper Sec 4.2; see
+    # docs/STAGE1_PREDICTOR_PRETRAINING.md for why this is our own addition, not released code)
+    # ------------------------------------------------------------------
+    def _build_future_target(self, tac_f: dict, tac_t: dict, tac_mask_f: dict | None):
+        """z* (Eq. 2) + Dbar (Eq. 5 target), both from the SAME (tac_{t+H} - tac_t) diff.
+
+        Mirrors ``_build_g``'s per-view masking, but AVERAGES the per-view encodings instead of
+        concatenating them -- the paper defines z* as the mean over active views of
+        f_enc(tac_{t+H}^k - tac_t^k), not a per-view token layout (there is no attention over
+        views for the target side, unlike g's role as the predictor's key/value).
+
+        Target stop-gradient is an implementation assumption, not specified in the paper.
+        The shared projection updates through the current branch, so these targets still
+        change between optimizer steps; this is not a fixed or EMA target encoder.
+
+        Returns (z_star | None, dbar_field | None, has_future(B,) bool). ``dbar_field`` is the
+        (B, C, H, W) masked-mean pixel-space diff (BEFORE the grid downsample and the recon
+        head's grid choice are applied by the caller), so the caller decides the target
+        resolution. Rows with no valid future view (has_future=False) are still shaped
+        correctly (zeros) -- the caller must exclude them via the mask, not skip them, so batch
+        shapes stay uniform across a mixed-embodiment / partially-clamped batch.
+        """
+        keys = [k for k in tac_f if k in tac_t]
+        if not keys:
+            any_img = next(iter(tac_f.values()), None)
+            if any_img is None:
+                return None, None, None
+            B = any_img.shape[0]
+            return None, None, torch.zeros(B, dtype=torch.bool, device=any_img.device)
+
+        view_masks = tac_mask_f or {}
+        with torch.no_grad():
+            enc_list, field_list, valid_list = [], [], []
+            for k in keys:
+                diff = tac_f[k].float() - tac_t[k].float()          # (B, C, H, W)
+                enc_list.append(self.tactile_encoder(diff))          # (B, n_tokens, D)
+                field_list.append(diff)
+                rk = view_masks.get(k)
+                if rk is None:
+                    rk = torch.ones(diff.shape[0], dtype=torch.bool, device=diff.device)
+                else:
+                    rk = rk.to(device=diff.device, dtype=torch.bool).reshape(-1)
+                current_mask = (getattr(self, "_last_tac_mask", None) or {}).get(k)
+                if current_mask is not None:
+                    rk = rk & current_mask.to(device=diff.device, dtype=torch.bool).reshape(-1)
+                valid_list.append(rk)
+
+            valid = torch.stack(valid_list, dim=0)                      # (V, B)
+            has_future = valid.any(dim=0)                               # (B,)
+            w = valid.to(torch.float32)
+            w = w / w.sum(dim=0, keepdim=True).clamp(min=1.0)           # (V, B), masked mean weights
+
+            enc_stack = torch.stack(enc_list, dim=0)                    # (V, B, n_tokens, D)
+            z_star = (enc_stack * w[:, :, None, None]).sum(dim=0)       # (B, n_tokens, D)
+
+            field_stack = torch.stack(field_list, dim=0)                # (V, B, C, H, W)
+            dbar_field = (field_stack * w[:, :, None, None, None]).sum(dim=0)  # (B, C, H, W)
+
+        return z_star.detach(), dbar_field.detach(), has_future
+
+    def _stage1_infonce_loss(self, z: torch.Tensor, z_star: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+        """Symmetric InfoNCE (paper Eq. 3-4): h(.) = mean-pool over tokens + L2-normalize,
+        applied independently to z (n_latent tokens) and z* (encoder's n_tokens) -- the two
+        sides need not share a token count since both collapse to one vector per sample before
+        the cosine-similarity matrix. ``valid`` rows lack a real future-tactile target (e.g. a
+        tail-clamped episode end or a platform missing every tactile view that step) and are
+        DROPPED from the pool rather than zero-filled, so they cannot supply a degenerate
+        (batch-constant) target as a negative -- see canonical_tactile_policy.py's clamp-mask
+        comment, which this loss is the consumer of.
+        """
+        import torch.distributed as dist
+        from torch.distributed.nn.functional import all_gather
+
+        # Gather before masking so ranks with different valid counts have equal shapes.
+        # Autograd-aware gathering plus DDP averaging gives the global-batch gradient.
+        z = z.float().mean(dim=1)
+        z_star = z_star.detach().float().mean(dim=1)
+        if dist.is_initialized():
+            z = torch.cat(all_gather(z), dim=0)
+            targets = [torch.empty_like(z_star) for _ in range(dist.get_world_size())]
+            masks = [torch.empty_like(valid) for _ in range(dist.get_world_size())]
+            dist.all_gather(targets, z_star.contiguous())
+            dist.all_gather(masks, valid.contiguous())
+            z_star, valid = torch.cat(targets), torch.cat(masks)
+        n_valid = int(valid.sum())
+        if n_valid < 2:
+            # Not enough real targets this batch to form a contrastive pool (>=2 needed for a
+            # meaningful softmax over negatives); contribute no gradient rather than a
+            # misleading number.
+            return z.sum() * 0.0
+        z = z[valid]
+        z_star = z_star[valid]
+        hz = F.normalize(z, dim=-1)
+        hzs = F.normalize(z_star, dim=-1)
+        temp = float(getattr(self.config, "stage1_temperature", 0.07))
+        if not math.isfinite(temp) or temp <= 0:
+            raise ValueError("stage1_temperature must be finite and positive")
+        logits = (hz @ hzs.t()) / temp                                    # (B', B')
+        labels = torch.arange(logits.shape[0], device=logits.device)
+        loss_i2t = F.cross_entropy(logits, labels)
+        loss_t2i = F.cross_entropy(logits.t(), labels)
+        return 0.5 * (loss_i2t + loss_t2i)
+
+    def forward_stage1(self, observation) -> torch.Tensor:
+        """Public entry point for scripts/train_stage1_predictor.py. See _forward_stage1."""
+        return self._forward_stage1(observation)
+
+    def _forward_stage1(self, observation) -> torch.Tensor:
+        """Stage-1 forward (paper Sec 4.2): L_1 = L_NCE + lambda_rec * L_rec.
+
+        Action-free by construction: takes NO ``actions`` argument, never builds the action
+        suffix, and never touches ``action_in_proj``/the action expert/``action_out_proj``.
+        Requires ``config.stage1_pretrain_enabled`` and a data pipeline that loads a ``.future``
+        tactile frame (``future_frame_offset>0`` on the DataConfig; see
+        LeRobotCanonicalTaskTactileDataConfig).
+
+        The base policy is frozen for this stage per the paper ("With the entire base policy
+        frozen, we train only the predictor, the tactile projection, and a lightweight
+        reconstruction head") -- enforced by the CALLER (the training script only unfreezes
+        ``tactile_encoder.tactile_proj`` / ``tactile_predictor`` / ``tactile_recon_head``), but
+        the prefix forward is ALSO wrapped in ``torch.no_grad()`` here so the ~3B-param VLM
+        backbone never builds an autograd graph for this loss regardless of what the caller
+        freezes.
+        """
+        assert self.stage1_pretrain_enabled, "forward_stage1 requires config.stage1_pretrain_enabled=True"
+        images, img_masks, lang_tokens, lang_masks, _state, _expert_images = self._preprocess_observation(
+            observation, train=True
+        )
+        with torch.no_grad():
+            vl_ctx, _prefix_embs, prefix_pad_masks, _prefix_att_masks, _pkv = self._prefix_forward(
+                images, img_masks, lang_tokens, lang_masks, use_cache=False
+            )
+        vl_ctx = vl_ctx.detach()
+
+        z, _g, has_tac = self._compute_z(vl_ctx, prefix_pad_masks)
+
+        tac_f = self._last_tac_f or {}
+        tac_t = self._last_tac_t or {}
+        tac_mask_f = getattr(self, "_last_tac_mask_f", None)
+        z_star, dbar_field, has_future = self._build_future_target(tac_f, tac_t, tac_mask_f)
+        if z_star is None:
+            raise RuntimeError(
+                "forward_stage1 requires a '.future' tactile frame in the observation; set "
+                "future_frame_offset>0 on the DataConfig (see LeRobotCanonicalTaskTactileDataConfig)."
+            )
+
+        valid = has_tac & has_future
+        nce_loss = self._stage1_infonce_loss(z, z_star, valid)
+
+        grid = self.tactile_recon_head.grid
+        gray = dbar_field.mean(dim=1, keepdim=True)                              # (B, 1, H, W)
+        dbar = F.adaptive_avg_pool2d(gray, grid).squeeze(1)    # (B, grid, grid)
+        pred_field = self.tactile_recon_head(z)                                  # (B, grid, grid)
+        import torch.distributed as dist
+
+        valid_count = valid.sum().detach()
+        world_size = dist.get_world_size() if dist.is_initialized() else 1
+        if dist.is_initialized():
+            dist.all_reduce(valid_count)
+        # Sum valid rows, then normalize by the GLOBAL count, including empty ranks.
+        # Empty indexing retains the graph without incorporating invalid target pixels.
+        recon_sum = (pred_field[valid].float() - dbar[valid]).abs().sum()
+        recon_loss = recon_sum * world_size / (valid_count.clamp(min=1) * grid * grid)
+
+        lam = float(getattr(self.config, "stage1_lambda_rec", 0.5))
+        total = nce_loss + lam * recon_loss
+        self._last_loss_parts = {
+            "stage1_nce": float(nce_loss.detach()),
+            "stage1_recon": float(recon_loss.detach()),
+            "stage1_total": float(total.detach()),
+            "stage1_valid_frac": float(valid.float().mean().detach()),
+            "stage1_valid_count": int(valid_count),
+        }
+        return total
 
     def _vl_dropout_keep(self, batch_size: int, device) -> torch.Tensor | None:
         """Per-sample keep mask for VL-dropout. True => the sample KEEPS suffix→prefix attention;
