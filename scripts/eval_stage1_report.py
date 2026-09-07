@@ -174,6 +174,8 @@ def compare(args):
                         canvas[y + 26:y + 250, x:x + 224] = panel
                     cv2.putText(canvas, f"Offline +1.67s | t={records[i, 1] / 30:.2f}s | signed range +/-0.1",
                                 (8, 23), cv2.FONT_HERSHEY_SIMPLEX, .46, (20, 20, 20), 1)
+                    cv2.putText(canvas, "8x8 hand-averaged change | blue: decrease | red: increase | fixed scale",
+                                (8, 553), cv2.FONT_HERSHEY_SIMPLEX, .36, (20, 20, 20), 1)
                     writer.append_data(canvas)
                     if i == selected[len(selected) // 2]:
                         imageio.imwrite(args.output / f"{name}.png", canvas)
