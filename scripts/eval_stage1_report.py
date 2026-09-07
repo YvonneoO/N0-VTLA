@@ -99,8 +99,15 @@ def evaluate(args):
     args.output.mkdir(parents=True, exist_ok=False)
     np.savez_compressed(args.output / "predictions.npz", prediction=pred, target=target, records=records)
     metrics = summarize(pred, target, records)
+    metadata_path = checkpoint.parent / "metadata.pt"
+    completed_updates = 0
+    if args.label == "after":
+        metadata = torch.load(metadata_path, map_location="cpu", weights_only=False)
+        if metadata.get("step_format") != "completed_updates":
+            raise ValueError("Ambiguous checkpoint step format")
+        completed_updates = int(metadata["global_step"])
     metrics.update(label=args.label, checkpoint=str(checkpoint), dataset=str(args.dataset), stride=5,
-                   missing_keys=sorted(missing), seed=cfg.seed,
+                   missing_keys=sorted(missing), seed=cfg.seed, completed_updates=completed_updates,
                    normalization_sha256=hashlib.sha256((args.dataset / "meta/tactile_normalization.json").read_bytes()).hexdigest())
     (args.output / "metrics.json").write_text(json.dumps(metrics, indent=2))
     print(json.dumps(metrics, indent=2), flush=True)
@@ -117,6 +124,11 @@ def signed_heatmap(field, limit=0.1):
 
 def compare(args):
     import imageio.v2 as imageio
+    before_meta = json.loads((args.before / "metrics.json").read_text())
+    after_meta = json.loads((args.after / "metrics.json").read_text())
+    for key in ("dataset", "normalization_sha256", "seed", "stride"):
+        if before_meta[key] != after_meta[key]:
+            raise ValueError(f"Before/after provenance differs: {key}")
     with np.load(args.before / "predictions.npz") as b, np.load(args.after / "predictions.npz") as a:
         records, target = a["records"], a["target"]
         before, after = b["prediction"], a["prediction"]
@@ -155,7 +167,7 @@ def compare(args):
                     panels += [signed_heatmap(target[i]), signed_heatmap(before[i]), signed_heatmap(after[i])]
                     canvas = np.full((556, 672, 3), 245, np.uint8)
                     titles = ["Current RGB", "Current left pressure", "Current right pressure",
-                              "True future change", "Before training", "After 2000 updates"]
+                              "True future change", "Before training", f"After {after_meta['completed_updates']} updates"]
                     for j, (panel, title) in enumerate(zip(panels, titles)):
                         y, x = 36 + (j // 3) * 254, (j % 3) * 224
                         cv2.putText(canvas, title, (x + 5, y + 18), cv2.FONT_HERSHEY_SIMPLEX, .42, (20, 20, 20), 1)
