@@ -188,6 +188,7 @@ class Stage1Tests(unittest.TestCase):
             save_interval: int = 100
 
         policy = TinyPolicy()
+        policy.register_parameter("z_gate", nn.Parameter(torch.tensor([0.3]), requires_grad=False))
         optimizer = torch.optim.AdamW(policy.parameters())
         policy(sample()).backward()
         optimizer.step()

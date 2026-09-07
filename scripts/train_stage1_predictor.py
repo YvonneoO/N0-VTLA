@@ -76,6 +76,17 @@ class _Stage1Wrapper(nn.Module):
         return self.policy.forward_stage1(observation)
 
 
+def load_stage1_policy_weights(policy, weights_file, device, *, strict):
+    # Released robot checkpoints may carry an action-conditioning gate even when the
+    # Stage-1 config does not construct it. Preserve it unchanged for later action stages.
+    with safetensors.safe_open(weights_file, framework="pt", device="cpu") as weights:
+        if "z_gate" in weights.keys() and not hasattr(policy, "z_gate"):
+            policy.register_parameter("z_gate", nn.Parameter(weights.get_tensor("z_gate").to(device),
+                                                             requires_grad=False))
+            policy.z_gate_zero_init = True
+    return safetensors.torch.load_model(policy, weights_file, strict=strict, device=str(device))
+
+
 def save_stage1_checkpoint(model, optimizer, global_step, config, is_main):
     """Full policy checkpoint; global_step counts completed optimizer updates."""
     if not is_main:
@@ -114,7 +125,7 @@ def load_stage1_checkpoint(model, optimizer, checkpoint_dir, device):
     latest = max(steps)
     ckpt_dir = checkpoint_dir / f"{latest}"
     raw_model = model.module.policy if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model.policy
-    safetensors.torch.load_model(raw_model, ckpt_dir / "model.safetensors", strict=True, device=str(device))
+    load_stage1_policy_weights(raw_model, ckpt_dir / "model.safetensors", device, strict=True)
     optimizer.load_state_dict(torch.load(ckpt_dir / "optimizer.pt", map_location=device, weights_only=False))
     metadata = torch.load(ckpt_dir / "metadata.pt", map_location=device, weights_only=False)
     step = metadata.get("global_step", latest)
@@ -198,7 +209,7 @@ def train_loop_stage1(config: _config.TrainConfig) -> None:
     # if present; tactile_recon_head is our own new module and is NEVER in an upstream
     # checkpoint, so it always comes up randomly initialized here -- expected, not an error).
     if not resuming:
-        missing, unexpected = safetensors.torch.load_model(policy, weights_file, strict=False, device=str(device))
+        missing, unexpected = load_stage1_policy_weights(policy, weights_file, device, strict=False)
         allowed_missing = ("tactile_encoder.", "tactile_predictor.", "tactile_recon_head.", "z_proj.", "z_gate")
         missing_base = [name for name in missing if not name.startswith(allowed_missing)]
         if missing_base or unexpected:
