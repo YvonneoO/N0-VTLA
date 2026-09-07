@@ -388,6 +388,7 @@ def main() -> None:
                         help="Fixed tacWAM pad30 train-only pressure statistics JSON")
     parser.add_argument("--split-manifest", type=Path)
     parser.add_argument("--split", choices=["train", "validation", "test"])
+    parser.add_argument("--extra-raw-root", type=Path, action="append", default=[])
     args = parser.parse_args()
     if bool(args.split_manifest) != bool(args.split):
         parser.error("--split-manifest and --split must be supplied together")
@@ -400,7 +401,7 @@ def main() -> None:
     args.output_dir.mkdir(parents=True)
 
     episodes = [
-        p for p in sorted(args.raw_root.iterdir())
+        p for root in [args.raw_root, *args.extra_raw_root] for p in sorted(root.iterdir())
         if p.is_dir()
         and all((p / name).exists() for name in (*RGB_KEYS.values(), *TACTILE_KEYS.values()))
     ]
@@ -500,6 +501,7 @@ def main() -> None:
     (meta / "tactile_normalization.json").write_text(json.dumps(norm, indent=2))
     (meta / "selection.json").write_text(json.dumps({
         "split": args.split, "rejected": rejected,
+        "raw_roots": [str(p) for p in [args.raw_root, *args.extra_raw_root]],
         "split_manifest_sha256": hashlib.sha256(args.split_manifest.read_bytes()).hexdigest()
         if args.split_manifest else None,
     }, indent=2))
