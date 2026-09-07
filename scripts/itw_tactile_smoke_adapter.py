@@ -16,6 +16,7 @@ result should be used to validate tactile encoding and data plumbing only.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import json
 import math
 from pathlib import Path
@@ -134,9 +135,9 @@ def _load_video_epochs(ep_dir: Path, stream: str, fallback_len: int) -> np.ndarr
     return np.arange(fallback_len, dtype=np.float64) / DATASET_FPS
 
 
-def _pad_ids(npz: np.lib.npyio.NpzFile) -> list[str]:
+def _pad_ids(npz: Mapping[str, np.ndarray]) -> list[str]:
     ids = []
-    for key in npz.files:
+    for key in npz:
         if key.startswith("tactile_"):
             ids.append(key.split("_", 1)[1])
     return sorted(ids, key=lambda x: int(x) if x.isdigit() else x)
@@ -186,7 +187,7 @@ def _mirror_box(box: tuple[float, float, float, float]) -> tuple[float, float, f
 
 
 def _slot_rgb(
-    npz: np.lib.npyio.NpzFile,
+    npz: Mapping[str, np.ndarray],
     pid: str,
     idx: int,
     pressure_limits: tuple[float, float],
@@ -208,8 +209,18 @@ def _rasterize_tactile_npz(
     layout: str = "grid",
     canvas_size: int = 224,
 ) -> int:
-    npz = np.load(npz_path)
+    # NPZ indexing decompresses a whole array. Cache each array once per episode,
+    # rather than decompressing every pad/channel again for every output frame.
+    with np.load(npz_path) as archive:
+        npz = {key: archive[key] for key in archive.files
+               if key == "timestamps" or key.startswith(("tactile_", "tf_tactile_"))}
     tac_epochs = np.asarray(npz["timestamps"], dtype=np.float64)
+    if not len(tac_epochs) or not np.isfinite(tac_epochs).all() or np.any(np.diff(tac_epochs) < 0):
+        raise ValueError(f"invalid/nonmonotonic tactile timestamps: {npz_path}")
+    if not np.isfinite(frame_epochs).all() or np.any(np.diff(frame_epochs) < 0):
+        raise ValueError("invalid/nonmonotonic video timestamps")
+    if frame_epochs[-1] < tac_epochs[0] or frame_epochs[0] > tac_epochs[-1]:
+        raise ValueError(f"video and tactile clocks do not overlap: {npz_path}")
     pad_ids = _pad_ids(npz)
     if not pad_ids:
         raise ValueError(f"no tactile_* arrays in {npz_path}")
