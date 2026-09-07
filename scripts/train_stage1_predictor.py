@@ -297,7 +297,8 @@ def train_loop_stage1(config: _config.TrainConfig) -> None:
             info["lr"] = optim.param_groups[0]["lr"]
             infos.append(info)
 
-            if is_main and global_step % config.log_interval == 0:
+            if is_main and (global_step == 1 or global_step % config.log_interval == 0
+                            or global_step == config.num_train_steps):
                 mean_info = {k: float(np.mean([i[k] for i in infos])) for k in infos[0]}
                 logging.info(f"step={global_step} " + " ".join(f"{k}={v:.4f}" for k, v in mean_info.items()))
                 if config.wandb_enabled:

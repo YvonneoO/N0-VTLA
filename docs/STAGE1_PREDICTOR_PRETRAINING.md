@@ -67,6 +67,15 @@ must be computed separately before action-based training.
 
 ## Run and Verification
 
+On the lab's Blackwell GPUs (`sm_120`), use the CUDA 12.8 wheel of PyTorch 2.7.1.
+The CUDA 12.6 wheel imports successfully but fails GPU execution with "no kernel image".
+Installing repo dependencies can replace the base image's torch, so verify the runtime:
+
+```bash
+python -m pip install --no-cache-dir torch==2.7.1+cu128 --index-url https://download.pytorch.org/whl/cu128
+python -c 'import torch; print(torch.__version__, torch.cuda.get_arch_list())'
+```
+
 Run on lab inside Docker after local commit/push and server pull:
 
 ```bash
