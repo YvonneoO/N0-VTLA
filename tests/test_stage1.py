@@ -3,8 +3,10 @@
 Run inside the lab container: python -m unittest discover -s tests -p test_stage1.py -v
 """
 import copy
+import dataclasses
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -151,6 +153,59 @@ class Stage1Tests(unittest.TestCase):
         self.assertFalse(out["image_mask"]["left_wrist_left_tactile.future"])
         self.assertTrue(out["image_mask"]["left_wrist_left_tactile.baseline"])
         self.assertNotIn("action", data)
+
+    def test_stage1_config_removes_action_dependencies_only(self):
+        from n0vtla import transforms
+        from n0vtla.training import config
+
+        stage1 = config.get_config("vtla_stage1_predictor_pretrain")
+        posttrain = config.get_config("vtla_tactile_posttrain")
+        # Avoid downloading tokenizers or reading machine-specific norm assets.
+        with mock.patch.object(config.ModelTransformFactory, "__call__", return_value=transforms.Group()), \
+             mock.patch.object(config.DataConfigFactory, "_load_norm_stats", return_value=None):
+            data = stage1.data.create(Path("/tmp/unused-stage1-test-assets"), stage1.model)
+            robot = posttrain.data.create(Path("/tmp/unused-stage1-test-assets"), posttrain.model)
+        self.assertEqual(data.action_sequence_keys, ())
+        self.assertEqual(robot.action_sequence_keys, ("action",))
+        self.assertFalse(any(isinstance(t, transforms.DeltaActions) for t in data.data_transforms.inputs))
+        self.assertTrue(any(isinstance(t, transforms.DeltaActions) for t in robot.data_transforms.inputs))
+        key = "observation.image.left_wrist_left_tactile"
+        row = {key: np.zeros((3, 4, 4, 3), dtype=np.uint8)}
+        for transform in (*data.repack_transforms.inputs, *data.data_transforms.inputs):
+            row = transform(row)
+        self.assertEqual(row["actions"].shape, (50, 32))
+        self.assertEqual(len(data.extra_delta_timestamps[key]), 3)
+
+    def test_checkpoint_resume_counts_completed_updates(self):
+        from scripts.train_stage1_predictor import (
+            _Stage1Wrapper, load_stage1_checkpoint, save_stage1_checkpoint,
+        )
+
+        @dataclasses.dataclass
+        class CheckpointConfig:
+            checkpoint_dir: Path
+            num_train_steps: int = 2
+            save_interval: int = 100
+
+        policy = TinyPolicy()
+        optimizer = torch.optim.AdamW(policy.parameters())
+        policy(sample()).backward()
+        optimizer.step()
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = CheckpointConfig(Path(tmp))
+            save_stage1_checkpoint(_Stage1Wrapper(policy), optimizer, 2, cfg, True)
+            restored = TinyPolicy()
+            restored_optim = torch.optim.AdamW(restored.parameters())
+            step = load_stage1_checkpoint(_Stage1Wrapper(restored), restored_optim, Path(tmp), "cpu")
+            self.assertEqual(step, 2)
+            for a, b in zip(policy.parameters(), restored.parameters(), strict=True):
+                torch.testing.assert_close(a, b)
+            metadata_path = Path(tmp) / "2" / "metadata.pt"
+            metadata = torch.load(metadata_path, weights_only=False)
+            metadata.pop("step_format")
+            torch.save(metadata, metadata_path)
+            self.assertEqual(load_stage1_checkpoint(
+                _Stage1Wrapper(restored), restored_optim, Path(tmp), "cpu"), 3)
 
     def test_ddp_global_loss_and_gradients_with_empty_rank(self):
         with tempfile.TemporaryDirectory() as tmp:
