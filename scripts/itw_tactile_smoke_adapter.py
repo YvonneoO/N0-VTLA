@@ -386,7 +386,11 @@ def main() -> None:
     parser.add_argument("--tactile-layout", choices=["grid", "hand"], default="hand")
     parser.add_argument("--normalization", type=Path, required=True,
                         help="Fixed tacWAM pad30 train-only pressure statistics JSON")
+    parser.add_argument("--split-manifest", type=Path)
+    parser.add_argument("--split", choices=["train", "validation", "test"])
     args = parser.parse_args()
+    if bool(args.split_manifest) != bool(args.split):
+        parser.error("--split-manifest and --split must be supplied together")
     norm = load_normalization(args.normalization)
 
     if args.output_dir.exists():
@@ -399,7 +403,28 @@ def main() -> None:
         p for p in sorted(args.raw_root.iterdir())
         if p.is_dir()
         and all((p / name).exists() for name in (*RGB_KEYS.values(), *TACTILE_KEYS.values()))
-    ][: args.max_episodes]
+    ]
+    rejected = []
+    if args.split_manifest:
+        split_data = json.loads(args.split_manifest.read_text())
+        allowed = {r["recording_uuid"] for r in split_data["records"] if r["split"] == args.split}
+        accepted = []
+        for episode in episodes:
+            if episode.name not in allowed:
+                continue
+            try:
+                aligned_timeline(episode)
+            except (ValueError, KeyError, OSError) as exc:
+                rejected.append({"episode": episode.name, "reason": str(exc)})
+                continue
+            accepted.append(episode)
+            if len(accepted) == args.max_episodes:
+                break
+        episodes = accepted
+        if len(episodes) < args.max_episodes:
+            raise ValueError(f"Only {len(episodes)} aligned {args.split} episodes available")
+    else:
+        episodes = episodes[:args.max_episodes]
     if not episodes:
         raise SystemExit(f"no complete episodes found under {args.raw_root}")
 
@@ -473,6 +498,11 @@ def main() -> None:
     )
     (meta / "source_episodes.json").write_text(json.dumps(source_map, ensure_ascii=False, indent=2), encoding="utf-8")
     (meta / "tactile_normalization.json").write_text(json.dumps(norm, indent=2))
+    (meta / "selection.json").write_text(json.dumps({
+        "split": args.split, "rejected": rejected,
+        "split_manifest_sha256": hashlib.sha256(args.split_manifest.read_bytes()).hexdigest()
+        if args.split_manifest else None,
+    }, indent=2))
     (meta / "tactile_encoding.json").write_text(json.dumps({
         "version": "pressure_tacwam_v1", "channels": "R=G=B=pressure_gray", "shear_used": False,
         "normalized_range": [-1, 8], "gray_mapping": "round((clip(normal,-1,8)+1)*255/9)",
