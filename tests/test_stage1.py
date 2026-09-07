@@ -189,14 +189,14 @@ class Stage1Tests(unittest.TestCase):
 
         policy = TinyPolicy()
         policy.register_parameter("z_gate", nn.Parameter(torch.tensor([0.3]), requires_grad=False))
-        optimizer = torch.optim.AdamW(policy.parameters())
+        optimizer = torch.optim.AdamW(p for p in policy.parameters() if p.requires_grad)
         policy(sample()).backward()
         optimizer.step()
         with tempfile.TemporaryDirectory() as tmp:
             cfg = CheckpointConfig(Path(tmp))
             save_stage1_checkpoint(_Stage1Wrapper(policy), optimizer, 2, cfg, True)
             restored = TinyPolicy()
-            restored_optim = torch.optim.AdamW(restored.parameters())
+            restored_optim = torch.optim.AdamW(p for p in restored.parameters() if p.requires_grad)
             step = load_stage1_checkpoint(_Stage1Wrapper(restored), restored_optim, Path(tmp), "cpu")
             self.assertEqual(step, 2)
             for a, b in zip(policy.parameters(), restored.parameters(), strict=True):
