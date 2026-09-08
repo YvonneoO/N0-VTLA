@@ -101,15 +101,50 @@ def batch_check():
                 config=cfg.name,batch_size=cfg.batch_size,horizon=cfg.model.action_horizon)
 
 
+def checkpoint_check(checkpoint, base):
+    import torch
+    from safetensors import safe_open
+
+    metadata = torch.load(checkpoint / "metadata.pt", map_location="cpu", weights_only=False)
+    optimizer = torch.load(checkpoint / "optimizer.pt", map_location="cpu", weights_only=True, mmap=True)
+    nonfinite, compared, shapes = [], {}, {}
+    with safe_open(checkpoint / "model.safetensors", framework="pt", device="cpu") as trained, \
+         safe_open(base / "model.safetensors", framework="pt", device="cpu") as initial:
+        for key in trained.keys():
+            value = trained.get_tensor(key)
+            if not torch.isfinite(value).all():
+                nonfinite.append(key)
+            shapes[key] = list(value.shape)
+            if key in initial.keys() and any(s in key for s in (
+                "action_out_proj", "z_gate", "z_proj", "tactile_proj",
+            )):
+                delta = value.float() - initial.get_tensor(key).float()
+                compared[key] = dict(changed=int(torch.count_nonzero(delta)), max_abs=float(delta.abs().max()))
+    assert not nonfinite
+    assert any(v["changed"] for v in compared.values())
+    steps = sorted({int(s["step"]) for s in optimizer["state"].values() if "step" in s})
+    assert steps == [metadata["global_step"]]
+    return dict(saved_global_step=metadata["global_step"],optimizer_steps=steps,
+                tensors_checked=len(shapes),all_weights_finite=True,changed_tensors=compared,
+                note="Checks deserialization and selected weight changes, not closed-loop policy quality.")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode",choices=["batch","motion"])
+    parser.add_argument("mode",choices=["batch","motion","checkpoint"])
     parser.add_argument("--source",type=Path)
+    parser.add_argument("--checkpoint",type=Path)
+    parser.add_argument("--base",type=Path)
     parser.add_argument("--output",type=Path,required=True)
     args = parser.parse_args()
     if args.output.exists():
         raise FileExistsError(args.output)
-    report = batch_check() if args.mode == "batch" else motion_diagnostic(args.source)
+    if args.mode == "batch":
+        report = batch_check()
+    elif args.mode == "motion":
+        report = motion_diagnostic(args.source)
+    else:
+        report = checkpoint_check(args.checkpoint,args.base)
     args.output.parent.mkdir(parents=True,exist_ok=True)
     args.output.write_text(json.dumps(report,indent=2))
     print(json.dumps(report,indent=2))

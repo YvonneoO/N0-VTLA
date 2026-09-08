@@ -268,8 +268,20 @@ substitute one for another.
    inside the intended container and hand clear, not merely reaching near it.
    Use the same conditions and execution settings for comparison policies.
 
-No robot adapter, post-training job, or real-world deployment is claimed as
-completed by this document. HF access and the first sample inspection are now
-complete. Remaining gates include clock alignment, command/state semantics and
-causal resampling, tactile units/scales, canonical conversion and inverse tests,
-and access to the original artifact editor for publishing these revisions there.
+### Follow-Up: Robot Smoke Preparation
+
+See [Wet-Lab Post-Training Smoke](WETLAB_POSTTRAIN_SMOKE.md) for the subsequent
+implementation and measured checks. An explicitly smoke-only adapter now
+produces 307 continuous frames using causal raw commands; the actual default
+loader returns finite `[64,50,32]` action batches, with correct sensor masks.
+Action packing and the full delta/quantile normalization/inverse chain have
+passed numerical round-trip checks. A separate one-recording robot pressure
+asset preserves nonconstant tactile video without changing human statistics.
+
+Physical cross-host sync remains unverified: optical-flow versus robot-speed
+lag estimates disagree across temporal halves. No offset correction was
+applied. This preparation does not establish deployability or tactile benefit.
+Consult the smoke report for the training outcome; remaining production gates
+include reliable clock alignment, multi-recording train-only calibration,
+online command-state integration and supervised robot safety validation.
+The original remote artifact still needs an editable source to publish changes.

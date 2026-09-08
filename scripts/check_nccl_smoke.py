@@ -1,4 +1,7 @@
-"""Bounded small-tensor collective check before loading post-training weights."""
+"""Small collective check; wrap torchrun in `timeout 90s` to bound init hangs.
+
+The process-group timeout does not reliably bound communicator initialization.
+"""
 import datetime
 import os
 
