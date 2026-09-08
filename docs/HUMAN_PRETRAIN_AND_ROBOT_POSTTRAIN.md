@@ -281,7 +281,11 @@ asset preserves nonconstant tactile video without changing human statistics.
 Physical cross-host sync remains unverified: optical-flow versus robot-speed
 lag estimates disagree across temporal halves. No offset correction was
 applied. This preparation does not establish deployability or tactile benefit.
-Consult the smoke report for the training outcome; remaining production gates
+The official-base single-GPU smoke completed three optimizer steps with finite
+loss/gradients; the saved step-2 checkpoint has 1,074 finite tensors and verified
+action/tactile parameter changes. The original trainer's final-save off-by-one
+means the completed third update was not saved. This is pipeline validation,
+not policy success. Consult the smoke report for details; remaining production gates
 include reliable clock alignment, multi-recording train-only calibration,
 online command-state integration and supervised robot safety validation.
 The original remote artifact still needs an editable source to publish changes.

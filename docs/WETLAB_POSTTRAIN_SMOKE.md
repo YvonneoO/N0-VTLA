@@ -137,6 +137,39 @@ All following paths are on lab inside Docker:
 - Batch checks: `/DATA2/qianqian/n0vtla_robot_audit/batch_check_v1.json` and `batch_check_v2.json`
 - Motion evidence: `/DATA2/qianqian/n0vtla_robot_audit/motion_diagnostic_v1.json`
 - Training log: `/DATA2/qianqian/N0-VTLA/logs/wetlab_cap_to_tray_smoke_single_v1.log`
+- Checkpoint: `/DATA2/qianqian/N0-VTLA/checkpoints/vtla_tactile_posttrain/wetlab_cap_to_tray_smoke_single_v1/2`
+- Checkpoint audit: `/DATA2/qianqian/n0vtla_robot_audit/checkpoint_check_v1.json`
 
-Training outcome is recorded after completion, not inferred from successful
-data loading or checkpoint initialization.
+## Completed Smoke Result
+
+The single-GPU run exited successfully on 2026-09-08 at 08:55:48 server log
+time, completing all three optimizer steps. The training loop took about 114
+seconds, including data-worker startup and checkpoint writing.
+
+| Logged step (zero-based) | Loss | Gradient norm | Main LR |
+|---|---|---|---|
+| 0 | 0.7585564 | 7.42 | 3.9920e-8 |
+| 1 | 0.8089033 | 7.35 | 7.9840e-8 |
+| 2 | 0.6159542 | 5.19 | 1.1976e-7 |
+
+No nonfinite-gradient skip was logged. Peak allocated GPU memory was 49.65 GiB,
+peak reserved 52.64 GiB. The tiny learning rates are the unchanged 500-step
+warmup, not evidence of a useful fitted policy. Three stochastic batches do not
+establish a loss trend, convergence, dataset benefit, or real-world success.
+
+Checkpoint deserialization passed: all 1,074 stored model tensors are finite;
+optimizer state and metadata both report global step 2. Compared with official
+base, action output projection, tactile projection, z projection and z gate
+contain actual nonzero parameter changes. This validates optimizer updates,
+including the tactile pathway, rather than only a forward pass.
+
+**Existing checkpoint-save off-by-one:** the trainer increments `global_step`
+before calling `save_checkpoint`, but its final-save condition compares against
+`num_train_steps - 1`. Thus this three-step run writes `/2`, not `/3`; the third
+update completed but was not persisted. No training code was changed to hide or
+repair this during the smoke. Before a full run, separately fix/test final-step
+checkpoint saving or choose an explicit save interval that covers the last step.
+
+Status: data/codec/normalization/forward/backward/optimizer/save/read checks PASS;
+multi-GPU NCCL initialization and physical cross-host synchronization remain
+unresolved. No real-robot motion or deployment was performed.
