@@ -74,7 +74,12 @@ def batch_check():
     assert masks["base_0_rgb"]["true"] == 64
     assert masks["right_wrist_0_rgb"]["true"] == 64
     assert masks["left_wrist_0_rgb"]["true"] == 0
+    assert masks["right_wrist_right_tactile"]["true"] == 64
+    assert masks["right_wrist_right_tactile.baseline"]["true"] == 64
     mask = transforms.make_bool_mask(9,-1,9,-1,-12)
+    norm = loader.data_config().norm_stats
+    normalize = transforms.Normalize(norm, use_quantiles=True)
+    unnormalize = transforms.Unnormalize(norm, use_quantiles=True)
     error = 0.
     for p in (Path(cfg.data.repo_id)/"data").rglob("*.parquet"):
         tab = pq.read_table(p)
@@ -85,11 +90,14 @@ def batch_check():
         for i in range(len(state)):
             delta = transforms.DeltaActions(mask)({"state":state[i],"actions":horizon[i].copy()})
             np.testing.assert_allclose(delta["actions"],expected[i],atol=1e-6)
-            absolute = transforms.AbsoluteActions(mask)(delta)["actions"]
+            normalized = normalize(delta)
+            assert np.isfinite(normalized["actions"]).all()
+            absolute = transforms.AbsoluteActions(mask)(unnormalize(normalized))["actions"]
             error = max(error,float(np.max(np.abs(absolute-horizon[i]))))
+    assert error < 1e-3
     return dict(action_shape=list(act.shape),state_shape=list(obs.state.shape),finite=True,
                 action_range=[float(act.min()),float(act.max())],image_masks=masks,
-                delta_stats_match=True,delta_inverse_max_error=error,
+                delta_stats_match=True,normalize_and_delta_inverse_max_error=error,
                 config=cfg.name,batch_size=cfg.batch_size,horizon=cfg.model.action_horizon)
 
 
