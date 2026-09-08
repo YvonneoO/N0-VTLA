@@ -1,8 +1,8 @@
 import sys
+import unittest
 from pathlib import Path
 
 import numpy as np
-import pytest
 from scipy.spatial.transform import Rotation
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
@@ -14,7 +14,7 @@ def test_causal_boundaries_and_stale():
     assert idx.tolist() == [0,0,0,2,2,3,3]
     assert valid.tolist() == [False,True,True,True,False,True,False]
     assert np.all(age[valid] >= 0)
-    with pytest.raises(ValueError):
+    with unittest.TestCase().assertRaises(ValueError):
         causal_indices([20,10],[20],10)
 
 
@@ -39,7 +39,18 @@ def test_motor_and_rotation_roundtrip():
 
 
 def test_invalid_commands_rejected():
-    with pytest.raises(ValueError):
+    with unittest.TestCase().assertRaises(ValueError):
         pack_commands(np.full((1,6),np.nan),np.zeros((1,6)))
-    with pytest.raises(ValueError):
+    with unittest.TestCase().assertRaises(ValueError):
         pack_commands(np.zeros((1,6)),np.full((1,6),1001))
+
+
+def load_tests(loader, tests, pattern):
+    return unittest.TestSuite(unittest.FunctionTestCase(fn) for fn in (
+        test_causal_boundaries_and_stale, test_runs_do_not_join_gaps,
+        test_motor_and_rotation_roundtrip, test_invalid_commands_rejected,
+    ))
+
+
+if __name__ == "__main__":
+    unittest.main()
