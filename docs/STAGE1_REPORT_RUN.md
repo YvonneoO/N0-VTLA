@@ -32,6 +32,8 @@ or unseen-task isolation.
 
 Lab Docker checkout: `/DATA2/qianqian/N0-VTLA`.
 Launch there with `bash scripts/run_itw_stage1_report.sh` on an available GPU.
+Report plotting requires `matplotlib==3.10.6`, installed in the lab container
+without changing the existing PyTorch or NumPy versions.
 The script protects existing experiment directories; after a partial failure,
 inspect outputs rather than blindly deleting or overwriting them.
 
@@ -75,3 +77,16 @@ only the reconstruction head is new. The default task prompt and constant zero
 state remain unchanged. Successful execution or improvement over a random head
 alone is not proof of useful contact forecasting; performance against the
 zero-change baseline is essential.
+
+## Initialization Evaluation
+
+The initial held-out evaluation completed before the 2,000-update training run:
+
+| Metric | Initialized model | Zero-change predictor |
+|---|---:|---:|
+| MAE, all 994 samples | 0.1550473 | 0.00148208 |
+| MAE, active subset (102 samples) | 0.1585377 | 0.00714330 |
+
+The reconstruction head is randomly initialized in this baseline. Its large
+initial error is expected and makes improvement over initialization alone an
+insufficient result. The 994 observations span all ten validation recordings.
