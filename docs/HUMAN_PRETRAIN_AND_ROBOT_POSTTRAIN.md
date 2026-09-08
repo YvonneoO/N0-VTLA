@@ -13,10 +13,10 @@ in the fork; they have NOT yet been saved into that remote artifact.
 Robot dataset: `SingleBicycle/tacwam-wetlab-tasks`, inspected revision
 `ca16780a64856da90033d0270822a806ab3eb53c`. Public metadata lists 53 H5 episodes,
 all under `smoke_test/`; the dataset card identifies these as `cap_to_tray`.
-The supplied HF credential authenticates as `qqyang`, but the gated files
-return HTTP 403 because that account lacks dataset authorization. No H5,
-robot recording, or reference loader has been downloaded or executed during
-this audit. Dataset-specific claims below are from the card, not a sample audit.
+Access for `qqyang` has now been granted. One pinned episode was downloaded and
+audited in the lab Docker; details and limitations are recorded below. The
+reference loader was read, not executed. Statements in the dataset-card section
+remain card claims unless explicitly verified in the sample audit.
 Credentials are never part of this document or the repository.
 
 ## Section A: Human Visual-Tactile Pretraining
@@ -159,14 +159,65 @@ per-dimension or per-timestep masked loss would change the training objective;
 do not silently enable such a change under the request to keep training settings
 fixed. Do not fill invalid targets with NaN and expect `action_mask` to hide them.
 
-### One-Episode Audit, Pending Access
+### One-Episode Audit: Downloaded and Inspected
 
-Download one pinned `smoke_test/<uuid>` only, plus the small reference loader and
-card. Prioritize H5, head/right-wrist MP4 and timestamps, right glove NPZ,
-task/QC metadata, and frame/robot calibration metadata. Depth is not required
-for this policy audit. Do not execute downloaded helper code before reviewing it.
+Episode `094fa583-d87b-5c37-ad38-42d57fa97d48` is stored inside Docker `n0vtla` at
+`/DATA2/qianqian/n0vtla_robot_audit/cap_to_tray/smoke_test/094fa583-d87b-5c37-ad38-42d57fa97d48`.
+Selected episode files total 237,702,437 bytes (about 238 MB), excluding the
+small root README/loader. No depth, left camera, or other episode was downloaded.
+No post-training job or robot movement was started.
 
-Verify:
+Verified observations:
+
+- H5 has 570 rows over 18.967 seconds at approximately 30 Hz. The source trial is
+  `cap_smoke_b08_t03_merged`, block `cap_smoke_b08`. `robot/manifest.json` labels
+  the trial `success`; `task_info.json.success` is null. Use the trial label,
+  not the vendor form or the generic QC verdict, for outcome selection.
+- Arm commands are `(570, 6)` xyz mm + axis-angle degrees; hand commands are
+  `(570, 6)`. The 244 valid arm-command/clutch rows have finite arm and hand
+  targets. Their three commanded orientation dimensions are exactly constant.
+  Measured arm and hand streams have only 241 and 242 valid rows respectively
+  within that same 244-row subset, despite finite values elsewhere.
+- Clutch spans rows 171-480 (310 rows), but only 244 rows satisfy arm validity.
+  Those valid rows form 60 disjoint runs, longest 24 frames: there are NO
+  contiguous 50-frame all-valid arm-target windows. All 326 invalid arm rows
+  still contain finite values, so finiteness alone is not a validity check.
+  Inspect raw command timestamps and establish bounded causal hold semantics;
+  do not compact valid rows and label the resulting sequence 30 Hz. The
+  reference loader does compact rows, so it is not a drop-in temporal-chunk
+  loader for this training recipe.
+- Both RGB files are H.264, 1280x720, 30 fps. Head contains 7,731 frames;
+  right wrist contains 7,736. Three task frames per camera decoded successfully.
+  Valid task indices are head 1731-2039 and wrist 1733-2041, confirming that the
+  files cover a whole recording block, not just this 19-second trial.
+- Cross-host synchronization remains UNVERIFIED. The manifest applies 0 ms
+  offset, has no clap marks, and explicitly rejects the motion-correlation
+  estimate (-1266.7 ms) as broad/shallow and not confident. Do not apply that
+  rejected estimate. The QC `PASS` and timestamp-nearest coverage do not prove
+  physical RGB/robot/tactile synchronization. Frame-alignment yaw calibration
+  is a spatial transform, not a clock-offset correction.
+- Right NPZ contains 7,807 whole-block samples and 15 pressure arrays totaling
+  880 taxels; 568 samples fall within the H5 time interval using supplied clocks.
+  The H5 tactile arrays are only 15-pad summaries, not full-resolution taxels.
+  Its `frame_id_unwrapped` length is also 7,807, not 570: do not index it as an
+  episode-row-aligned array. These counts do not resolve the clock uncertainty.
+- Pressure is extremely sparse. Over that nominal episode interval, only pads
+  3, 7, 13, 15, and 18 have nonzero pressure; the largest raw value is 0.000878119.
+  Applying the EXISTING human train normalization with the existing encoder
+  erases all variations in pads 3 and 7 (gray 28 only); pads 13, 15, and 18 span
+  only gray 28-29. All other pads are gray 28. This loss occurs BEFORE H.264.
+  The same normalization METHOD can be retained, but blindly reusing the human
+  numerical scales is unsuitable here. First verify units/calibration, then
+  fit fixed per-pad robot TRAIN statistics using the same method, shared by all
+  robot comparison arms; do not fit per episode or on validation data. No such
+  statistics have been changed or fitted during this audit.
+- Revo2 fingertip force is a distinct five-channel signal (observed max 2.98 N),
+  not a replacement with the same units as the glove taxels. QC reports ring
+  status invalid throughout and thumb invalid in 83.1% of raw samples. Preserve
+  sensor-specific masks and provenance; do not silently fuse these streams.
+
+The sample establishes available modalities and exposes concrete blockers; it
+does not certify the whole dataset or policy readiness. Remaining steps:
 
 1. Actual dataset keys, shapes, timestamps, quaternion order, axis-angle units,
    base/TCP/flange frames, hand motor order and units; compare command and
@@ -218,5 +269,7 @@ substitute one for another.
    Use the same conditions and execution settings for comparison policies.
 
 No robot adapter, post-training job, or real-world deployment is claimed as
-completed by this document. The present blockers are HF dataset authorization,
-sample-level contract verification, and access to the original artifact editor.
+completed by this document. HF access and the first sample inspection are now
+complete. Remaining gates include clock alignment, command/state semantics and
+causal resampling, tactile units/scales, canonical conversion and inverse tests,
+and access to the original artifact editor for publishing these revisions there.
