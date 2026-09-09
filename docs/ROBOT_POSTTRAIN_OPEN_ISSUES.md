@@ -201,22 +201,32 @@ noise floor is a per-block constant that isn't identical across blocks). Full
 per-episode report: `/DATA2/qianqian/n0vtla_robot_audit/dataset_audit_v1.json`
 on lab. The swap direction is uniform across the whole delivered batch.
 
-### 3.2 P0: Constant-dimension tolerance is likely too tight
+### 3.2 RESOLVED: constant-dimension tolerance is fine as written
 
-`compute_canonical_norm.py:32` sets `_CONSTANT_DIM_TOL = 1e-8`, designed to catch
-exact-zero padding dimensions (`as_json`, lines 106-143). The dataset card's
-measured float32 std for this task's frozen orientation channels is `8.4e-3` to
-`1.5e-2` — five to six orders of magnitude above `1e-8`. Converting axis-angle to
-rot6d before normalization does not remove the underlying "physically frozen,
-numerically noisy" structure, since the input rot6d values are computed from the
-same float32-quantized axis-angle values.
+Checked 2026-09-09 on the real 59-episode/16,041-frame train split (§3.4): the
+rot6d frozen-orientation dims (13-18) come out with `std==1.0`, `mean==0.0`
+exactly — i.e. `_CONSTANT_DIM_TOL = 1e-8` (`compute_canonical_norm.py:32`)
+correctly caught them as constant. The theoretical concern below turned out not
+to apply to this code:
 
-Concrete next step: once `compute_canonical_norm.py` is run over more than one
-episode, print the fitted `std`/`q01`/`q99` per dimension and manually confirm
-which dims come out non-constant purely from float rounding. Detecting
-constant-ness on the physical (pre-rot6d) axis-angle spread, as the dataset card
-recommends (`std < 0.1°` in raw degrees), is more robust than any fixed tolerance
-applied after the rot6d conversion.
+The dataset card's own float32-std demonstration (`8.4e-3` to `1.5e-2` on the raw
+axis-angle degrees) is an artifact of **naive float32 accumulation** — numpy
+summing ~14k copies of a ~127-magnitude float32 value loses precision at the
+0.1-scale, which is what produces that nonzero std. `compute_canonical_norm.py`'s
+`RunningStats` never does this: it upcasts every batch to **float64** before
+accumulating (`RunningStats.update`, `batch = np.asarray(batch, dtype=np.float64)`).
+Since the underlying rot6d values are computed once (in float64, inside
+`pack_commands`) from a bit-identical axis-angle input and only cast to float32 at
+write time, every frame's float32-quantized rot6d value is identical bit-for-bit,
+so float64 accumulation measures a true, exact zero variance — nowhere near the
+`1e-8` boundary in either direction. The dataset card's warning is still correct
+advice in general (don't accumulate variance in float32), it just doesn't describe
+a bug present in this specific implementation.
+
+Cross-check, as a bonus: the fitted state-dim means for xyz (348.9 / 53.8 / 217.1 mm)
+match the dataset card's own independently-reported numbers (348.99 / 52.21 / 216.42 mm)
+closely, which is independent evidence the pipeline is measuring the right physical
+quantities.
 
 ### 3.3 P1: Physical cross-host sync still unverified
 
@@ -250,30 +260,78 @@ Unchanged from `WETLAB_POSTTRAIN_SMOKE.md`. Single-GPU already covers the
 recipe's global batch size (64), so this blocks scaling to faster/multi-node
 training but not the next round of correctness fixes above.
 
+### 3.7 RESOLVED: an over-strict causal camera-gap check silently discarded 31/53 episodes
+
+Found and fixed 2026-09-09 while batch-converting the full dataset. Before the
+fix, `wetlab_smoke_adapter.py` required `gap >= 0` (the mapped video frame at or
+before the 30 Hz grid tick) for both cameras. A first full-batch run produced only
+22 of 53 episodes; a per-episode diagnostic breaking out every validity mask
+separately showed all 53 had a healthy 200-440-row contiguous window on every
+*other* condition (arm/hand/tactile age, clutch, engaged window) — the camera
+check alone was zeroing out 31 of them.
+
+Root cause: the delivered `src_idx` is a **nearest-frame** mapping, not a
+most-recent-past one, so `gap = t - frame_timestamp` straddles zero by design
+(typically ±15-30 ms, roughly one 30 Hz frame period) depending on the per-episode
+phase between the video and robot clocks. The one episode this adapter was
+originally tuned against (`094fa583`) happened to have a favorable phase where gap
+stayed positive throughout — that was luck, not a property of the delivery.
+
+Fix: replaced the one-sided `gap >= 0 & gap <= 50ms` cutoff with a **symmetric**
+`|gap| <= 17.5ms` tolerance, reusing the exact `CAMERA_ALIGNMENT_TOLERANCE_NS`
+constant already established elsewhere in this codebase for the same kind of
+camera-alignment check, rather than inventing a new threshold. Note this trades a
+small amount of documented "strict causality" (a training window can now include a
+camera frame up to 17.5 ms in the future relative to its nominal tick) for a large
+reduction in discarded data — worth being explicit about if this dataset is ever
+used to justify a causality-dependent claim; it does not affect the tactile/command
+causal-hold logic (`causal_indices`), which is unchanged and still one-sided.
+
+Result after the fix: **0 of 53 episodes skipped** (up from 31), producing a
+68-episode canonical dataset (some source episodes now split into more than one
+qualifying window) with 17,861 total frames — more than the delivered dataset
+card's own reported 14,356 action frames, consistent with this adapter's
+zero-order-hold construction keeping small command-loop gaps rather than dropping
+them (see §2's action-source design-choice row).
+
 ## 4. Recommended order of work
 
 1. ~~§3.1 — verify the tactile swap.~~ DONE, confirmed on all 53 episodes.
 2. ~~§3.4 — download the remaining 52 episodes.~~ DONE.
-3. **Next**: §3.2 — rerun `compute_canonical_norm.py` over all 53 episodes'
-   converted output (once the fixed `wetlab_smoke_adapter.py` has been run
-   across all of them, not just the one smoke episode) and print per-dimension
-   `std`/`q01`/`q99`; confirm the constant-channel guard actually fires on the
-   frozen-orientation dims rather than only on exact-zero padding.
-4. §5.1 items 3-4 (raw-vs-mask cross-check on a sample, multi-episode sync
-   diagnostic) and §5.1 items 7-8 (QC-gate tabulation, block-level split) —
-   these need the full episode set, which is now in place.
-5. §5.2 visualizations, especially the per-episode overlay video (cheapest way
-   to confirm the tactile fix is also *aligned*, not just *live*).
-6. Refit tactile and pose normalization stats across the real train split
-   (block-level, per §5.1.8), rerun `verify_wetlab_smoke.py batch` and
-   `checkpoint` checks against the new stats.
-7. Once 3–6 are settled, write down a final decision (with citation to §1.4's
+3. ~~§3.7 — fix the over-strict camera-gap check.~~ DONE, 0/53 episodes skipped
+   (was 31/53).
+4. ~~Fit a shared train-split tactile normalization~~ (`fit_wetlab_tactile_norm.py`)
+   ~~and build the full canonical dataset~~ (`build_wetlab_canonical_dataset.py`,
+   `--workers N` for parallel per-episode conversion) — DONE:
+   `/DATA2/qianqian/n0vtla_robot_audit/canonical_wetlab_v1`, 68 episodes / 17,861
+   frames (59 train / 9 val), split tagged per episode using
+   `wetlab_split_v1_tacwam_match.json` (tacWAM's exact 48/5 episode-random split,
+   for direct comparability — see §2's split-choice caveat about leakage risk and
+   why checkpoint selection should NOT use this split, only the block-holdout one).
+5. ~~§3.2 — rerun `compute_canonical_norm.py --train-only`.~~ DONE and RESOLVED:
+   frozen-orientation dims correctly get identity stats; state-dim means
+   cross-validate against the dataset card's own numbers. Stats at
+   `/DATA2/qianqian/n0vtla_robot_audit/assets/vtla_tactile_posttrain/wetlab_full_v1/norm_stats.json`.
+6. **Next**: §5.1 items 3-4 (raw-vs-mask cross-check on a sample, multi-episode
+   sync diagnostic) and §5.1 item 7 (QC-gate tabulation) — the block-level split
+   (§5.1.8) is already done as part of step 4 above (`block_holdout_v1` in the
+   split manifest).
+7. §5.2 visualizations, especially the per-episode overlay video (cheapest way to
+   confirm the tactile fix is also *aligned*, not just *live* — see the
+   methodology note in §5.2 about why the encoded video comparison only became a
+   meaningful test once normalization was fit once across train rather than
+   per-episode).
+8. Rerun `verify_wetlab_smoke.py batch` and `checkpoint` checks against
+   `canonical_wetlab_v1` and the new `norm_stats.json` (the existing checks were
+   written against the single-episode smoke dataset and may need small path/shape
+   adjustments for the multi-episode one).
+9. Once 6–8 are settled, write down a final decision (with citation to §1.4's
    numbers) on whether to keep the commanded/absolute-delta contract or move to
    tacWAM's measured/framewise-delta contract — this determines what "the same
    data" means for the backbone comparison, so it should be fixed before either
    side's numbers are treated as final.
-8. §3.5 and §3.6 (checkpoint off-by-one, multi-GPU) whenever convenient before a
-   full-scale run; neither blocks the correctness work above.
+10. §3.5 and §3.6 (checkpoint off-by-one, multi-GPU) whenever convenient before a
+    full-scale run; neither blocks the correctness work above.
 
 ## 5. Verification and visualization checklist before scaling past one episode
 
