@@ -304,17 +304,51 @@ Downloaded 2026-09-09 to `/DATA2/qianqian/n0vtla_robot_audit/cap_to_tray/smoke_t
 Both the constant-dimension check (§3.2) and a real (non-smoke) tactile/pose
 normalization fit can now run over the full set or a proper train split of it.
 
-### 3.5 P2: Checkpoint final-step save off-by-one
+### 3.5 P2: Checkpoint final-step save off-by-one — mitigated, not fixed
 
-Unchanged from `WETLAB_POSTTRAIN_SMOKE.md`: `global_step` is incremented before
-the final-save comparison against `num_train_steps - 1`, so the last update of a
-run is never persisted. Cheap to fix, not urgent while still smoke-testing.
+Unchanged code-wise from `WETLAB_POSTTRAIN_SMOKE.md`: `global_step` is
+incremented before the final-save comparison against `num_train_steps - 1`
+(`train_pytorch.py:163`), so the true last update only gets persisted via the
+*periodic* `global_step % save_interval == 0` branch, not the buggy
+end-of-run-specific check. **Practical mitigation**: this is a non-issue whenever
+`save_interval` evenly divides `num_train_steps` — the periodic branch already
+covers the true final step in that case. The `vtla_tactile_posttrain` config's
+own defaults (`save_interval=5_000`, and `num_train_steps=20_000` for a full
+run) already satisfy this (20000 % 5000 == 0). It only bites custom short runs
+where the two don't divide evenly — e.g. the original 3-step smoke used the
+default `save_interval=5000` with `num_train_steps=3`, which is exactly the
+non-dividing case that lost the final step. Pick step counts accordingly rather
+than fixing the underlying vendor code.
 
-### 3.6 P2: Multi-GPU NCCL initialization stall
+### 3.6 RESOLVED (was a false alarm from GPU contention, not a code bug): multi-GPU NCCL
 
-Unchanged from `WETLAB_POSTTRAIN_SMOKE.md`. Single-GPU already covers the
-recipe's global batch size (64), so this blocks scaling to faster/multi-node
-training but not the next round of correctness fixes above.
+`WETLAB_POSTTRAIN_SMOKE.md` recorded multi-GPU NCCL initialization stalling on
+this rig, blaming P2P/IB/cuMem settings, and concluded "no NCCL environment fix
+is claimed." Retested 2026-09-09 with a minimal `dist.init_process_group("nccl")`
++ `all_reduce` probe wrapped in `timeout 90s` (as that doc itself recommended for
+future diagnostics) plus `NCCL_DEBUG=INFO`: **2-GPU and 4-GPU init both
+completed cleanly** (`ncclCommInitRankConfig ... Init COMPLETE`, correct
+`all_reduce` result), and a subsequent real 4-GPU DDP training run (data
+loading, model forward/backward, gradient sync, and a full checkpoint save at
+step 100 — `model.safetensors` 8.25 GB + `optimizer.pt` 14.3 GB written
+correctly, training continued past the save without hanging) also completed
+without any NCCL issue.
+
+The difference from the earlier failed attempts: GPU contention. `docker
+inspect n0vtla` shows `IpcMode=host`, `ShmSize=64GiB` (ruling out the classic
+Docker+NCCL shared-memory-too-small hang), so the container config was never
+the problem. `nvidia-smi --query-compute-apps` at the time of the earlier
+stalls is not available after the fact, but every GPU this session found busy
+(97-100% utilization from other users' jobs) was also where multi-GPU init
+previously hung, and init succeeded immediately once retried on genuinely idle
+GPUs. Heavy contention on the *same* physical GPUs from unrelated concurrent
+NCCL-using jobs is a known cause of exactly this class of symptom (topology
+detection / ring setup stalling indefinitely rather than erroring). **Lesson**:
+before concluding multi-GPU is broken on this host, check
+`nvidia-smi --query-compute-apps` for real per-GPU process occupancy (not just
+`utilization.gpu`, which can read low between an already-running job's compute
+bursts) and retry on genuinely idle GPUs before spending more time on NCCL
+environment variables.
 
 ### 3.7 RESOLVED: an over-strict causal camera-gap check silently discarded 31/53 episodes
 

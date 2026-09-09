@@ -43,16 +43,28 @@ latter silently trained on its val split too — see `ROBOT_POSTTRAIN_OPEN_ISSUE
   nothing enforced the split at the physical-directory level (see
   `ROBOT_POSTTRAIN_OPEN_ISSUES.md` §3.1, §3.7, §3.8).
 
-Still not done: a real (non-3-step) training run on `canonical_wetlab_v2_train`,
-robot controller integration, and any real-world deployment. A 300-step timing
-calibration run (`wetlab_full_v1_speedtest`) was launched against the older,
-leaky `canonical_wetlab_v1` purely to measure per-step wall-clock time (~9.3s/step
-steady-state on one GPU) — that measurement is unaffected by the leakage bug,
-but its checkpoint is not a valid trained result and should not be reused as
-one. The single-episode smoke run described below (three optimizer steps,
-official base) remains the only completed *correctness* validation of the
-training loop itself; repeat it against `canonical_wetlab_v2_train` before
-treating that as current.
+**A real full training run is in progress**: `wetlab_v2_train_full_run1`, 4-GPU
+DDP (physical GPUs 6,0,1,2 — chosen because they were genuinely idle per
+`nvidia-smi --query-compute-apps`, not just low `utilization.gpu`), 20,000
+steps at the `vtla_tactile_posttrain` config's own defaults (batch 64 global /
+16 per GPU, warmup 500, peak LR 2e-5, decay to 2e-6 over 20,000 steps,
+`save_interval=5000`), against `canonical_wetlab_v2_train` from official base.
+Multi-GPU DDP was previously believed broken on this host (see
+`ROBOT_POSTTRAIN_OPEN_ISSUES.md` §3.6) — retested and it works; the earlier
+stalls were caused by GPU contention with other users' jobs, not a code or
+container-config bug. Preceded by a 300-step DDP validation run on the same
+dataset (steady-state ~5s/step on 4 GPUs vs ~9.5s/step on 1) that confirmed
+training steps, gradient sync, and a full checkpoint save (step 100:
+`model.safetensors` + `optimizer.pt`, training continued normally afterward)
+all work correctly — that validation run and all older superseded artifacts
+(`canonical_smoke_v1`, `canonical_wetlab_v1`, their checkpoints and norm
+stats, `wetlab_full_v1_speedtest`) have been deleted from lab (~44 GB freed).
+
+Still not done: robot controller integration and any real-world deployment.
+Physical cross-host sync remains permanently unverified for this dataset (see
+`ROBOT_POSTTRAIN_OPEN_ISSUES.md` §3.3) — this training run does not resolve
+that, and any resulting checkpoint should still be treated as
+`physical_sync_verified: false` regardless of how well it trains.
 
 ## Data and Files
 
