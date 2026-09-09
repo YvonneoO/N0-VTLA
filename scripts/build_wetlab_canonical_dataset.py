@@ -26,6 +26,7 @@ import argparse
 import json
 import shutil
 import tempfile
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import pyarrow as pa
@@ -33,6 +34,16 @@ import pyarrow.parquet as pq
 
 import wetlab_smoke_adapter as adapter
 from itw_tactile_smoke_adapter import _info_json, _write_jsonl
+
+
+def _convert_one(uuid: str, source: Path, source_output: Path, norm_path: Path) -> tuple[str, str | None]:
+    """Runs in a worker process (must be a top-level function to be picklable).
+    Returns (uuid, None) on success or (uuid, error message) on a skip."""
+    try:
+        adapter.convert(source, source_output, allow_unverified_sync=True, norm_path=norm_path)
+    except ValueError as exc:
+        return uuid, str(exc)
+    return uuid, None
 
 
 def merge(per_source: list[tuple[str, Path]], split_manifest: dict, output: Path) -> dict:
@@ -112,6 +123,10 @@ def main() -> None:
     parser.add_argument("--scratch-dir", type=Path, default=None,
                          help="Where to write per-source intermediate conversions. "
                               "Defaults to a temp dir removed after merging.")
+    parser.add_argument("--workers", type=int, default=1,
+                         help="Parallel worker processes for the independent per-episode "
+                              "conversions (pure CPU/IO work -- video decode/encode, no GPU "
+                              "involved). merge() still runs single-threaded afterwards.")
     args = parser.parse_args()
     if args.output.exists():
         raise FileExistsError(args.output)
@@ -124,18 +139,29 @@ def main() -> None:
     scratch = args.scratch_dir if args.scratch_dir is not None else Path(scratch_ctx.name)
     scratch.mkdir(parents=True, exist_ok=True)
 
-    per_source, skipped = [], []
-    for uuid in all_uuids:
-        source = args.smoke_test_dir / uuid
-        source_output = scratch / uuid
-        try:
-            adapter.convert(source, source_output, allow_unverified_sync=True, norm_path=args.norm_path)
-        except ValueError as exc:
-            skipped.append(dict(uuid=uuid, reason=str(exc)))
-            print(f"SKIP {uuid}: {exc}")
-            continue
-        per_source.append((uuid, source_output))
-        print(f"converted {uuid} ({len(per_source)}/{len(all_uuids)} so far, {len(skipped)} skipped)")
+    jobs = {uuid: scratch / uuid for uuid in all_uuids}
+    results: dict[str, str | None] = {}
+    if args.workers <= 1:
+        for uuid, source_output in jobs.items():
+            _, error = _convert_one(uuid, args.smoke_test_dir / uuid, source_output, args.norm_path)
+            results[uuid] = error
+            done = sum(1 for e in results.values() if e is None)
+            print(f"{'SKIP ' + uuid + ': ' + error if error else 'converted ' + uuid} "
+                  f"({done}/{len(all_uuids)} converted so far, {len(results) - done} skipped)")
+    else:
+        with ProcessPoolExecutor(max_workers=args.workers) as pool:
+            futures = {pool.submit(_convert_one, uuid, args.smoke_test_dir / uuid, source_output, args.norm_path): uuid
+                       for uuid, source_output in jobs.items()}
+            for future in as_completed(futures):
+                uuid, error = future.result()
+                results[uuid] = error
+                done = sum(1 for e in results.values() if e is None)
+                print(f"{'SKIP ' + uuid + ': ' + error if error else 'converted ' + uuid} "
+                      f"({done}/{len(all_uuids)} converted, {len(results) - done} skipped, "
+                      f"{len(results)}/{len(all_uuids)} attempted)")
+
+    per_source = [(uuid, jobs[uuid]) for uuid in all_uuids if results[uuid] is None]
+    skipped = [dict(uuid=uuid, reason=results[uuid]) for uuid in all_uuids if results[uuid] is not None]
 
     summary = merge(per_source, manifest, args.output)
     summary["skipped"] = skipped
