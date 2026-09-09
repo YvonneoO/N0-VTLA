@@ -1,24 +1,33 @@
-"""Build one unified canonical wetlab dataset from all raw episodes in a split manifest.
+"""Build a canonical wetlab dataset for exactly one split (train/val/holdout).
 
-Converts every raw episode independently with wetlab_smoke_adapter.convert() (using
-a single shared tactile normalization -- see fit_wetlab_tactile_norm.py, and
-ROBOT_POSTTRAIN_OPEN_ISSUES.md #3.2/#5.1/#5.2 for why a per-episode ad hoc fit isn't
-enough beyond a one-episode smoke), then merges the resulting per-source mini
-LeRobot datasets into one dataset with globally renumbered episode/frame indices.
-Each merged episode is tagged with its source uuid, block, and split (train/val,
-per the split manifest) so compute_canonical_norm.py and any later analysis can
-filter by split without re-deriving it.
+Converts every raw episode in the requested split independently with
+wetlab_smoke_adapter.convert() (using a single shared tactile normalization --
+see fit_wetlab_tactile_norm.py, and ROBOT_POSTTRAIN_OPEN_ISSUES.md #3.2/#5.1/#5.2
+for why a per-episode ad hoc fit isn't enough beyond a one-episode smoke), then
+merges the resulting per-source mini LeRobot datasets into one dataset with
+globally renumbered episode/frame indices.
 
-A raw episode that produces no qualifying contiguous window (contiguous_runs finds
-nothing) is skipped and logged, not silently dropped -- see the printed/returned
-skip list.
+IMPORTANT: this builds ONE PHYSICAL DIRECTORY PER SPLIT, not one combined
+directory with a "split" tag on each episode. n0vtla/training/data_loader.py's
+LocalLeRobotV3Dataset has no concept of a split tag at all -- it loads every
+episode under the given root unconditionally, and meta/info.json's "splits"
+field is not read by it either. An earlier version of this script wrote one
+combined directory tagged per-episode; VTLA_DATASET_PATH pointed at that
+directory trained on all of it, silently including val (and even block-holdout)
+episodes. Run this once per split and point VTLA_DATASET_PATH at the TRAIN
+output only for actual training.
+
+A raw episode that produces no qualifying contiguous window (contiguous_runs
+finds nothing) is skipped and logged, not silently dropped -- see the
+printed/returned skip list.
 
 Usage:
   python scripts/build_wetlab_canonical_dataset.py \
     /DATA2/qianqian/n0vtla_robot_audit/cap_to_tray/smoke_test \
     scripts/wetlab_split_v1_tacwam_match.json \
     /DATA2/qianqian/n0vtla_robot_audit/wetlab_tactile_norm_v1.json \
-    /DATA2/qianqian/n0vtla_robot_audit/canonical_wetlab_v1
+    /DATA2/qianqian/n0vtla_robot_audit/canonical_wetlab_v1_train \
+    --which train --workers 8
 """
 from __future__ import annotations
 
@@ -46,15 +55,27 @@ def _convert_one(uuid: str, source: Path, source_output: Path, norm_path: Path) 
     return uuid, None
 
 
-def merge(per_source: list[tuple[str, Path]], split_manifest: dict, output: Path) -> dict:
+def split_uuids(manifest: dict, which: str) -> list[str]:
+    if which == "holdout":
+        uuids = manifest["block_holdout_v1"]["holdout_episodes"]
+    else:
+        uuids = manifest[which]
+    holdout = set(manifest["block_holdout_v1"]["holdout_episodes"])
+    train = set(manifest["train"])
+    val = set(manifest["val"])
+    if not (holdout.isdisjoint(train) and holdout.isdisjoint(val) and train.isdisjoint(val)):
+        raise ValueError("split_manifest's train/val/holdout are not mutually exclusive -- "
+                          "fix the manifest before building any split from it")
+    return sorted(set(uuids))
+
+
+def merge(which: str, per_source: list[tuple[str, Path]], split_manifest: dict, output: Path) -> dict:
     output_data = output / "data/chunk-000"
     output_meta = output / "meta"
     output_data.mkdir(parents=True)
     output_meta.mkdir(parents=True)
 
     block_of = split_manifest["block_of_episode"]
-    val_set = set(split_manifest["val"])
-    holdout_set = set(split_manifest["block_holdout_v1"]["holdout_episodes"])
 
     global_episode = 0
     global_index = 0
@@ -90,9 +111,7 @@ def merge(per_source: list[tuple[str, Path]], split_manifest: dict, output: Path
                 video_bytes += dst_video.stat().st_size
 
             episodes_out.append(dict(episode_index=global_episode, tasks=local["tasks"], length=n,
-                                      source_uuid=uuid, block=block_of.get(uuid, "unknown"),
-                                      split="val" if uuid in val_set else "train",
-                                      block_holdout=uuid in holdout_set))
+                                      source_uuid=uuid, block=block_of.get(uuid, "unknown"), split=which))
             stat = local_stats[[s["episode_index"] for s in local_stats].index(local_idx)]
             stat["episode_index"] = global_episode
             stats_out.append(stat)
@@ -108,10 +127,12 @@ def merge(per_source: list[tuple[str, Path]], split_manifest: dict, output: Path
         "".join(json.dumps(row) + "\n" for row in per_episode_meta))
     info = _info_json(global_episode, global_index, data_bytes, video_bytes, video_keys or [])
     info["robot_type"] = "xarm6_revo2"
+    # Informational only -- n0vtla/training/data_loader.py does not read "splits" at
+    # all, it loads every episode under the given root. Physical separation (this
+    # script builds one directory per split) is what actually keeps them apart.
+    info["splits"] = {which: f"0:{global_episode}"}
     (output_meta / "info.json").write_text(json.dumps(info, indent=2))
-    return dict(n_episodes=global_episode, n_frames=global_index,
-                n_train=sum(1 for e in episodes_out if e["split"] == "train"),
-                n_val=sum(1 for e in episodes_out if e["split"] == "val"))
+    return dict(which=which, n_source_episodes=len(per_source), n_episodes=global_episode, n_frames=global_index)
 
 
 def main() -> None:
@@ -120,6 +141,9 @@ def main() -> None:
     parser.add_argument("split_manifest", type=Path)
     parser.add_argument("norm_path", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--which", choices=("train", "val", "holdout"), required=True,
+                         help="Which mutually-exclusive partition of split_manifest to build. Run this "
+                              "script once per split you need -- each writes a separate directory.")
     parser.add_argument("--scratch-dir", type=Path, default=None,
                          help="Where to write per-source intermediate conversions. "
                               "Defaults to a temp dir removed after merging.")
@@ -132,8 +156,7 @@ def main() -> None:
         raise FileExistsError(args.output)
 
     manifest = json.loads(args.split_manifest.read_text())
-    all_uuids = sorted(manifest["train"] + manifest["val"])
-    assert len(all_uuids) == len(set(all_uuids)) == len(manifest["train"]) + len(manifest["val"])
+    all_uuids = split_uuids(manifest, args.which)
 
     scratch_ctx = tempfile.TemporaryDirectory() if args.scratch_dir is None else None
     scratch = args.scratch_dir if args.scratch_dir is not None else Path(scratch_ctx.name)
@@ -163,7 +186,7 @@ def main() -> None:
     per_source = [(uuid, jobs[uuid]) for uuid in all_uuids if results[uuid] is None]
     skipped = [dict(uuid=uuid, reason=results[uuid]) for uuid in all_uuids if results[uuid] is not None]
 
-    summary = merge(per_source, manifest, args.output)
+    summary = merge(args.which, per_source, manifest, args.output)
     summary["skipped"] = skipped
     (args.output / "meta" / "build_summary.json").write_text(json.dumps(summary, indent=2))
     print(json.dumps(summary, indent=2))

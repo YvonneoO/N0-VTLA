@@ -29,6 +29,7 @@ from pathlib import Path
 import numpy as np
 
 from itw_pressure import HANDS, PAD_IDS, SCHEMA
+from wetlab_smoke_adapter import resolve_own_tactile_frames
 
 SAMPLES_PER_RECORDING = 40
 SEED = 42
@@ -39,16 +40,19 @@ def fit_wetlab_normalization(episode_dirs: list[Path], *, samples_per_recording:
     rng = np.random.default_rng(seed)
     values = [[] for _ in PAD_IDS]
     for ep in episode_dirs:
-        npz_path = ep / "left_hand_data.npz"
+        # Restricted to THIS episode's own qualifying window(s), not the whole
+        # block-level capture file it's hard-linked into -- multiple trials
+        # (including ones assigned to val or block-holdout) can share that same
+        # file, so sampling from the full file range leaks across the split.
+        npz_path, own_frames = resolve_own_tactile_frames(ep)
         with np.load(npz_path, allow_pickle=False) as z:
-            n = len(z["timestamps"])
-            if n == 0:
-                raise ValueError(f"Empty tactile stream: {npz_path}")
-            pad_std = max(float(np.std(np.asarray(z[f"tactile_{p}"], np.float64))) for p in PAD_IDS)
+            if len(own_frames) == 0:
+                raise ValueError(f"No qualifying frames for {ep}")
+            pad_std = max(float(np.std(np.asarray(z[f"tactile_{p}"], np.float64)[own_frames])) for p in PAD_IDS)
             if pad_std < LIVE_STD_THRESHOLD:
-                raise ValueError(f"{npz_path} looks dead (max per-pad std {pad_std:.2e}); "
-                                 "do not fit normalization from it")
-            take = rng.integers(0, n, size=min(samples_per_recording, n))
+                raise ValueError(f"{npz_path} looks dead within {ep.name}'s own window "
+                                 f"(max per-pad std {pad_std:.2e}); do not fit normalization from it")
+            take = own_frames[rng.integers(0, len(own_frames), size=min(samples_per_recording, len(own_frames)))]
             for slot, pad in enumerate(PAD_IDS):
                 normal = np.asarray(z[f"tactile_{pad}"][take], np.float32)
                 finite = normal[np.isfinite(normal)]

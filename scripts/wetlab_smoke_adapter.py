@@ -92,11 +92,14 @@ def fit_smoke_pressure(archive, eligible):
                 fit_npz_indices=chosen.tolist(), seed=42, samples_per_recording=4)
 
 
-def convert(source, output, allow_unverified_sync, norm_path=None):
-    if not allow_unverified_sync:
-        raise ValueError("Physical clock alignment is unverified; require --allow-unverified-sync-smoke")
-    if output.exists():
-        raise FileExistsError(output)
+def resolve_episode_window(source):
+    """Everything needed to know which rows/tactile-npz-frames THIS episode may use,
+    shared between convert() and fit_wetlab_tactile_norm.py so a normalization fit
+    can be restricted to an episode's own trial window rather than the whole
+    block-level capture file it's hard-linked into (ROBOT_POSTTRAIN_OPEN_ISSUES.md
+    #3.2-followup: fitting from the whole file let samples land outside the fitting
+    episode's own window, and even inside a different, val-assigned trial sharing
+    the same underlying file)."""
     manifest = json.loads((source / "robot/manifest.json").read_text())
     if manifest["task"]["name"] != "cap_to_tray" or manifest["trial"]["label"] != "success":
         raise ValueError("Expected successful cap_to_tray trial")
@@ -158,6 +161,30 @@ def convert(source, output, allow_unverified_sync, norm_path=None):
         if not runs:
             raise ValueError("No continuous causal 50-frame segment")
         chosen = np.concatenate(runs)
+        return dict(manifest=manifest, commands=commands, hands=hands, tactile_source=tactile_source,
+                    t=t, ai=ai, aa=aa, hi=hi, hand_command_age=hand_command_age, ti=ti, ta=ta,
+                    video_indices=video_indices, camera_gaps=camera_gaps, runs=runs, chosen=chosen)
+
+
+def resolve_own_tactile_frames(source):
+    """Unique tactile-npz frame indices this episode's own qualifying window(s)
+    actually use -- the safe sampling pool for fitting normalization on this
+    episode, as opposed to the whole (possibly multi-trial, cross-split) file."""
+    window = resolve_episode_window(source)
+    return window["tactile_source"], np.unique(window["ti"][window["chosen"]])
+
+
+def convert(source, output, allow_unverified_sync, norm_path=None):
+    if not allow_unverified_sync:
+        raise ValueError("Physical clock alignment is unverified; require --allow-unverified-sync-smoke")
+    if output.exists():
+        raise FileExistsError(output)
+    window = resolve_episode_window(source)
+    manifest, commands, hands, tactile_source = window["manifest"], window["commands"], window["hands"], window["tactile_source"]
+    t, ai, aa, hi = window["t"], window["ai"], window["aa"], window["hi"]
+    hand_command_age, ti, ta = window["hand_command_age"], window["ti"], window["ta"]
+    video_indices, camera_gaps, runs, chosen = window["video_indices"], window["camera_gaps"], window["runs"], window["chosen"]
+    with np.load(tactile_source, allow_pickle=False) as z:
         if norm_path is not None:
             # Shared normalization fit once across the train split by
             # fit_wetlab_tactile_norm.py -- required for anything beyond a
