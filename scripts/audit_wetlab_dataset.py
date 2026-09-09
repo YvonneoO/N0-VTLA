@@ -30,15 +30,21 @@ def pad_stats(npz_path: Path) -> dict:
 
 
 def classify(left: dict, right: dict) -> str:
-    left_live = left["present"] and (left["max_pad_std"] or 0.0) >= LIVE_STD_THRESHOLD
-    right_live = right["present"] and (right["max_pad_std"] or 0.0) >= LIVE_STD_THRESHOLD
-    if left_live and not right_live:
+    # An absolute std threshold alone misclassifies same-block hard-linked episodes:
+    # the dataset card documents that one capture is hard-linked into every trial of
+    # a block, so the "dead" channel's own noise floor is a per-block constant, not a
+    # per-episode one -- it can drift above a fixed absolute cutoff while still being
+    # obviously the dead side of the pair. Compare the two channels to each other.
+    l = left["max_pad_std"] or 0.0 if left["present"] else 0.0
+    r = right["max_pad_std"] or 0.0 if right["present"] else 0.0
+    if l < LIVE_STD_THRESHOLD and r < LIVE_STD_THRESHOLD:
+        return "both_dead_or_missing"
+    ratio = (l + 1e-12) / (r + 1e-12)
+    if ratio >= 10:
         return "left_live_right_dead"
-    if right_live and not left_live:
+    if ratio <= 0.1:
         return "right_live_left_dead"
-    if left_live and right_live:
-        return "both_live"
-    return "both_dead_or_missing"
+    return "both_live_ambiguous"
 
 
 def audit_episode(ep_dir: Path) -> dict:
