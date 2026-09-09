@@ -375,20 +375,32 @@ them (see §2's action-source design-choice row).
    (`block_holdout_v1` in the split manifest). §5.1 item 3 (raw-vs-mask
    cross-check) is still open, lower priority now that the QC-gate tabulation
    surfaced the more actionable clap-marks/tip-dead findings by itself.
-7. **Next**: §5.2 visualizations, especially the per-episode overlay video
-   (cheapest way to confirm the tactile fix is also *aligned*, not just *live* —
-   see the methodology note in §5.2 about why the encoded video comparison only
-   became a meaningful test once normalization was fit once across train rather
-   than per-episode).
-8. Rerun `verify_wetlab_smoke.py batch` and `checkpoint` checks against
-   `canonical_wetlab_v1` and the new `norm_stats.json` (the existing checks were
-   written against the single-episode smoke dataset and may need small path/shape
-   adjustments for the multi-episode one).
-9. Once 6–8 are settled, write down a final decision (with citation to §1.4's
-   numbers) on whether to keep the commanded/absolute-delta contract or move to
-   tacWAM's measured/framewise-delta contract — this determines what "the same
-   data" means for the backbone comparison, so it should be fixed before either
-   side's numbers are treated as final.
+7. ~~§5.2 visualization — per-episode overlay video.~~ DONE:
+   `scripts/visualize_wetlab_episode.py` (head cam | wrist cam | tactile heatmap
+   | xyz step-size trace, reusing `itw_pressure.video_writer`'s libx264 encode —
+   an earlier cut used `cv2.VideoWriter`'s `mp4v` fourcc, which most browsers
+   can't decode; fixed to match the rest of this pipeline). Rendered
+   `episode_000000` (train, block b08) and `episode_000003` (val, block b11) to
+   `/DATA2/qianqian/n0vtla_robot_audit/viz/`.
+8. ~~Rerun `verify_wetlab_smoke.py batch` against `canonical_wetlab_v1`.~~ DONE
+   and PASSING: `delta_stats_match: true`,
+   `normalize_and_delta_inverse_max_error: 1.53e-5` (same order as the original
+   one-episode smoke), tactile masks correctly all-true for
+   `right_wrist_right_tactile`/`.baseline` and all-false for every `left_*`
+   slot. **Gotcha hit and fixed**: `compute_canonical_norm.py --repo-root`
+   defaults to the N0-VTLA repo itself
+   (`<repo>/assets/<train-config>/<asset-id>/norm_stats.json`) — passing a
+   custom `--repo-root` (as done once while iterating) writes stats the training
+   config can't find; omit `--repo-root` unless you also point the loader at the
+   same custom location. Current stats:
+   `/DATA2/qianqian/N0-VTLA/assets/vtla_tactile_posttrain/wetlab_full_v1/norm_stats.json`.
+   `checkpoint` check still needs a real (non-smoke) training run to check
+   against — deferred to whenever the next training run happens.
+9. **Next**: write down a final decision (with citation to §1.4's numbers) on
+   whether to keep the commanded/absolute-delta contract or move to tacWAM's
+   measured/framewise-delta contract — this determines what "the same data"
+   means for the backbone comparison, so it should be fixed before either side's
+   numbers are treated as final.
 10. §3.5 and §3.6 (checkpoint off-by-one, multi-GPU) whenever convenient before a
     full-scale run; neither blocks the correctness work above.
 
@@ -486,6 +498,45 @@ delivery once downloaded (§3.4), not just the one audited so far.
 Rebuild the canonical dataset from all verified-good episodes with the fixed
 adapter, refit normalization on the real train split, rerun the batch/checkpoint
 checks against it, and only then launch a real (not 3-step) training run.
+
+## 6. Final decision: keep the commanded / absolute-delta contract
+
+Decided 2026-09-09. **N0-VTLA keeps its existing commanded-state,
+absolute-action-with-single-subtracted-delta contract** (§2's first two rows) —
+do not switch to tacWAM's measured-state, per-step backward-framewise-delta
+contract, even though tacWAM's own smoothness numbers (§1.4) are a real point in
+its favor in isolation.
+
+Reasoning:
+
+- **This is a backbone/pretrain comparison, not a data-representation ablation**
+  (see the doc's Purpose section). The released N0-VTLA base checkpoint's action
+  head — `DeltaActions`, the commanded-state convention — was pretrained against
+  the commanded/absolute-delta contract. Feeding it tacWAM's measured/framewise
+  representation instead would test "N0-VTLA's backbone with its action head
+  knocked out of its pretrained distribution" against "tacWAM's backbone in its
+  own native representation" — that is not a fair comparison of the two
+  backbones' post-training capability, it's a confound.
+- Every artifact built so far (`wetlab_smoke_adapter.py`, the shared tactile
+  norm, `compute_canonical_norm.py`'s delta/normalization machinery, the
+  verified batch/round-trip checks in §4 step 8) is already built around this
+  contract and already passes its own correctness checks — switching now would
+  mean redoing that work for a data-representation change that only pays off if
+  a *later*, isolated ablation shows it matters for this specific backbone (it
+  might not: the smoothness argument is about demonstration-quality noise
+  entering the action target, and N0-VTLA's own zero-order-hold + 150ms causal
+  age-gating already suppresses a different source of the same category of
+  noise).
+- If a future session wants to test whether the measured/framewise contract
+  specifically helps *this* backbone, that is a well-defined, separate follow-up
+  ablation (same split, same normalization method, swap only the state source
+  and delta convention) — not something to fold silently into the current
+  correctness-focused pipeline.
+
+"Same data" for the purposes of the N0-VTLA-vs-tacWAM comparison therefore means:
+same 53 source episodes, same `wetlab_split_v1_tacwam_match.json` train/val
+assignment, same task/prompt — not an identical action-representation contract,
+which each backbone keeps in its own pretrained-native form.
 
 ## References
 
