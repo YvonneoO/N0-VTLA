@@ -188,6 +188,19 @@ completed 3-step smoke checkpoint on lab
 were built against the dead channel and should be regenerated from the fixed
 adapter before being reused for anything beyond pipeline-plumbing validation.
 
+**Update 2026-09-09 — confirmed on all 53 episodes, not just one.** All 53
+episodes were downloaded (§3.4, now done) and swept with
+`scripts/audit_wetlab_dataset.py`: every episode's `robot/manifest.json` shows
+`sides.right.present=true` / `sides.left.present=false` (uniformly single-arm,
+per §1.3's caution against assuming this from one sample), and every episode
+classifies as `left_live_right_dead` (relative-dominance comparison, not a bare
+absolute threshold — an earlier absolute-threshold version misclassified the two
+`cap_smoke_b10` trials as ambiguous because they share a hard-linked source
+capture per the dataset card's block/trial structure, so the dead channel's own
+noise floor is a per-block constant that isn't identical across blocks). Full
+per-episode report: `/DATA2/qianqian/n0vtla_robot_audit/dataset_audit_v1.json`
+on lab. The swap direction is uniform across the whole delivered batch.
+
 ### 3.2 P0: Constant-dimension tolerance is likely too tight
 
 `compute_canonical_norm.py:32` sets `_CONSTANT_DIM_TOL = 1e-8`, designed to catch
@@ -218,13 +231,12 @@ episodes; (c) continue training under the existing `--allow-unverified-sync-smok
 gate and treat any resulting policy as smoke-only until resolved, as already
 documented.
 
-### 3.4 P1: Only 1 of 53 episodes downloaded
+### 3.4 DONE: all 53 episodes downloaded
 
-Both the constant-dimension check (§3.2) and any real (non-smoke) tactile/pose
-normalization fit need the full episode set, or at minimum a proper train split
-of it. tacWAM's full delivery (with depth and both cameras) is 49 GB; N0-VTLA's
-current per-episode selection (~242 MB, no depth, no left camera) should scale to
-well under that for all 53 episodes.
+Downloaded 2026-09-09 to `/DATA2/qianqian/n0vtla_robot_audit/cap_to_tray/smoke_test`
+(977 files, ~13 GB — no depth video, both hand npz files now included per §3.1).
+Both the constant-dimension check (§3.2) and a real (non-smoke) tactile/pose
+normalization fit can now run over the full set or a proper train split of it.
 
 ### 3.5 P2: Checkpoint final-step save off-by-one
 
@@ -240,20 +252,27 @@ training but not the next round of correctness fixes above.
 
 ## 4. Recommended order of work
 
-1. §3.1 — download `left_hand_data.npz` for the audited episode, compare against
-   `right_hand_data.npz`. Cheap, and gates whether the tactile pathway has been
-   training on signal or noise.
-2. §3.2 — print per-dimension normalization stats once more than one episode is
-   converted; confirm the constant-channel guard actually fires where it needs to.
-3. §3.4 — download the remaining 52 episodes.
-4. Refit tactile and pose normalization stats across a real train split, rerun
-   `verify_wetlab_smoke.py batch` and `checkpoint` checks against the new stats.
-5. Once 1–4 are settled, write down a final decision (with citation to §1.4's
+1. ~~§3.1 — verify the tactile swap.~~ DONE, confirmed on all 53 episodes.
+2. ~~§3.4 — download the remaining 52 episodes.~~ DONE.
+3. **Next**: §3.2 — rerun `compute_canonical_norm.py` over all 53 episodes'
+   converted output (once the fixed `wetlab_smoke_adapter.py` has been run
+   across all of them, not just the one smoke episode) and print per-dimension
+   `std`/`q01`/`q99`; confirm the constant-channel guard actually fires on the
+   frozen-orientation dims rather than only on exact-zero padding.
+4. §5.1 items 3-4 (raw-vs-mask cross-check on a sample, multi-episode sync
+   diagnostic) and §5.1 items 7-8 (QC-gate tabulation, block-level split) —
+   these need the full episode set, which is now in place.
+5. §5.2 visualizations, especially the per-episode overlay video (cheapest way
+   to confirm the tactile fix is also *aligned*, not just *live*).
+6. Refit tactile and pose normalization stats across the real train split
+   (block-level, per §5.1.8), rerun `verify_wetlab_smoke.py batch` and
+   `checkpoint` checks against the new stats.
+7. Once 3–6 are settled, write down a final decision (with citation to §1.4's
    numbers) on whether to keep the commanded/absolute-delta contract or move to
    tacWAM's measured/framewise-delta contract — this determines what "the same
    data" means for the backbone comparison, so it should be fixed before either
    side's numbers are treated as final.
-6. §3.5 and §3.6 (checkpoint off-by-one, multi-GPU) whenever convenient before a
+8. §3.5 and §3.6 (checkpoint off-by-one, multi-GPU) whenever convenient before a
    full-scale run; neither blocks the correctness work above.
 
 ## 5. Verification and visualization checklist before scaling past one episode
@@ -263,18 +282,17 @@ delivery once downloaded (§3.4), not just the one audited so far.
 
 ### 5.1 Data integrity (must run before trusting any multi-episode fit)
 
-1. **Manifest sanity sweep.** Parse `robot/manifest.json` for every episode:
-   confirm `sides.right.present == true`, `sides.left.present == false`,
-   `task.name == "cap_to_tray"`, and record `trial.label`. Do not assume
-   uniformity across all 53 — flag, don't silently drop, any episode that
-   disagrees with the rest (mixed rig, wrong task, unexpected label).
-2. **Tactile liveness, both files, every episode.** Compute per-pad std for
-   *both* `left_hand_data.npz` and `right_hand_data.npz` per episode (this needs
-   downloading the file the current adapter skips — see §3.4). §3.1 confirmed
-   the swap on one episode by direct comparison plus the manifest's own
-   `tactile_left: present=false` declaration; confirm it holds — and holds in
-   the same direction — across the full delivered batch rather than assuming
-   one confirmed episode generalizes.
+1. **DONE — manifest sanity sweep.** `scripts/audit_wetlab_dataset.py` parses
+   `robot/manifest.json` for every episode. Result on all 53: `sides.right.present
+   == true`, `sides.left.present == false`, `task.name == "cap_to_tray"`
+   uniformly — no mixed-rig or wrong-task episodes found.
+2. **DONE — tactile liveness, both files, every episode.** Same script computes
+   per-pad std for both `left_hand_data.npz` and `right_hand_data.npz` and
+   classifies by relative dominance (not a bare absolute threshold — see the
+   `cap_smoke_b10` note in §3.1's update). Result: all 53/53 episodes classify
+   as `left_live_right_dead`. The swap direction is uniform across the whole
+   delivered batch; report at
+   `/DATA2/qianqian/n0vtla_robot_audit/dataset_audit_v1.json` on lab.
 3. **Command-vs-mask cross-check on a sample.** tacWAM's sibling
    `tacwam-teleop-smoke` audit found the delivered H5 `valid/*` masks reporting
    100% valid while a raw-timestamp cross-check found real gaps
