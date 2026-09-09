@@ -1,20 +1,51 @@
 # Robot Post-Training: Lab Setup
 
-## Status
+## Status (updated 2026-09-09 — see [ROBOT_POSTTRAIN_OPEN_ISSUES.md](ROBOT_POSTTRAIN_OPEN_ISSUES.md) for full history)
 
 The training pipeline is installed and smoke-tested in lab Docker `n0vtla`.
 It initializes from the official N0-VTLA base, **not our human Stage-1 checkpoint**.
-One `cap_to_tray` episode completed three optimizer steps. No full task training,
-robot controller integration, or real-world deployment has been completed.
+
+All 53 raw episodes are downloaded and converted into one canonical dataset,
+**superseding the single-episode `canonical_smoke_v1` described below** (that
+dataset was built from a since-fixed dead tactile channel and an over-strict
+camera-alignment check that discarded most episodes — do not reuse it):
+
+- Full canonical dataset: `/DATA2/qianqian/n0vtla_robot_audit/canonical_wetlab_v1`
+  — 68 episodes / 17,861 frames (59 train / 9 val), built by
+  `scripts/build_wetlab_canonical_dataset.py` from a shared tactile normalization
+  (`scripts/fit_wetlab_tactile_norm.py`) and the split manifest
+  `scripts/wetlab_split_v1_tacwam_match.json` (reproduces tacWAM's own default
+  48/5 episode-random train/val split for direct comparability, plus a separate
+  block-aware held-out set for checkpoint-selection/deployment decisions).
+- Train-only pose/action norm stats:
+  `/DATA2/qianqian/n0vtla_robot_audit/assets/vtla_tactile_posttrain/wetlab_full_v1/norm_stats.json`
+  (via `compute_canonical_norm.py --train-only`).
+- Fixed since the original smoke: the delivered `right_hand_data.npz` is a dead
+  channel on this rig (live signal is in `left_hand_data.npz`), and the original
+  camera causal-gap check silently discarded 31/53 episodes (see
+  `ROBOT_POSTTRAIN_OPEN_ISSUES.md` §3.1 and §3.7).
+
+Still not done: a real (non-3-step) training run on `canonical_wetlab_v1`, robot
+controller integration, and any real-world deployment. The single-episode smoke
+run described below (three optimizer steps, official base) remains the only
+completed training-loop validation; it should be repeated against
+`canonical_wetlab_v1` before treating it as current.
 
 ## Data and Files
 
 Source: [SingleBicycle/tacwam-wetlab-tasks](https://huggingface.co/datasets/SingleBicycle/tacwam-wetlab-tasks),
-pinned revision `ca16780a64856da90033d0270822a806ab3eb53c`.
-Only one episode was downloaded to lab, not all 53 episodes: approximately
-242 MB of selected files, including H5, head/right-wrist RGB and timestamps,
-right-hand tactile NPZ, robot JSONL, and metadata. Depth and left-camera video
-were not downloaded.
+pinned revision `ca16780a64856da90033d0270822a806ab3eb53c`. All 53 episodes are
+now downloaded to `/DATA2/qianqian/n0vtla_robot_audit/cap_to_tray/smoke_test`
+(977 files, ~13 GB): H5, head/right-wrist RGB and timestamps, **both**
+`left_hand_data.npz` and `right_hand_data.npz` (needed to confirm which one is
+live — see the swap above), robot JSONL, and metadata. Depth video was not
+downloaded (not needed by any current check).
+
+The rest of this document describes the original **single-episode smoke**
+(`canonical_smoke_v1`) that validated the training loop end-to-end. It is kept
+for the reproduction commands and the multi-GPU/checkpoint-saving findings,
+which are still accurate — just not for the data-pipeline details above, which
+`ROBOT_POSTTRAIN_OPEN_ISSUES.md` supersedes.
 
 All paths below are on lab, visible inside `n0vtla`:
 
