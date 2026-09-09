@@ -23,6 +23,8 @@ import cv2
 import numpy as np
 import pyarrow.parquet as pq
 
+from itw_pressure import video_writer
+
 PANEL = 224
 TRACE_H = 80
 LABEL_COLOR = (255, 255, 255)
@@ -73,7 +75,6 @@ def main() -> None:
     parser.add_argument("dataset_root", type=Path)
     parser.add_argument("--episode-index", type=int, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--fps", type=int, default=30)
     args = parser.parse_args()
     if args.output.exists():
         raise FileExistsError(args.output)
@@ -97,18 +98,21 @@ def main() -> None:
     trace_render = _trace_panel(xyz, PANEL * 3)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    writer = cv2.VideoWriter(str(args.output), cv2.VideoWriter_fourcc(*"mp4v"), args.fps,
-                              (PANEL * 3, PANEL + TRACE_H))
-    for i in range(n):
-        panels = [
-            _label(frames["head"][i], f"head  ep{idx} f{i}/{n}"),
-            _label(frames["wrist"][i], "wrist"),
-            _label(frames["tactile"][i], "tactile (left_hand_data.npz, labeled right)"),
-        ]
-        top = np.concatenate(panels, axis=1)
-        bottom = trace_render(i)
-        writer.write(np.concatenate([top, bottom], axis=0))
-    writer.release()
+    # imageio/libx264 (yuv420p, baseline profile) rather than cv2.VideoWriter's
+    # mp4v fourcc, which most browsers/players can't decode -- matches the same
+    # video_writer() helper the rest of this pipeline already uses for exactly
+    # this reason (itw_pressure.write_aligned_rgb/write_pressure_video).
+    with video_writer(args.output) as writer:
+        for i in range(n):
+            panels = [
+                _label(frames["head"][i], f"head  ep{idx} f{i}/{n}"),
+                _label(frames["wrist"][i], "wrist"),
+                _label(frames["tactile"][i], "tactile (left_hand_data.npz, labeled right)"),
+            ]
+            top = np.concatenate(panels, axis=1)
+            bottom = trace_render(i)
+            canvas = np.concatenate([top, bottom], axis=0)
+            writer.append_data(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB))
     print(f"wrote {n} frames -> {args.output}  "
           f"(source_uuid={row['source_uuid']}, block={row['block']}, split={row['split']})")
 
