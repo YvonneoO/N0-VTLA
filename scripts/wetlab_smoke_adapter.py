@@ -15,7 +15,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from scipy.spatial.transform import Rotation
 
-from itw_pressure import PAD_IDS, SCHEMA, write_aligned_rgb, write_pressure_video
+from itw_pressure import PAD_IDS, SCHEMA, load_normalization, write_aligned_rgb, write_pressure_video
 from itw_tactile_smoke_adapter import (
     _fixed_size_list_array, _hf_schema_metadata, _info_json, _quantile_stats, _write_jsonl,
 )
@@ -92,7 +92,7 @@ def fit_smoke_pressure(archive, eligible):
                 fit_npz_indices=chosen.tolist(), seed=42, samples_per_recording=4)
 
 
-def convert(source, output, allow_unverified_sync):
+def convert(source, output, allow_unverified_sync, norm_path=None):
     if not allow_unverified_sync:
         raise ValueError("Physical clock alignment is unverified; require --allow-unverified-sync-smoke")
     if output.exists():
@@ -147,7 +147,14 @@ def convert(source, output, allow_unverified_sync):
         if not runs:
             raise ValueError("No continuous causal 50-frame segment")
         chosen = np.concatenate(runs)
-        norm = fit_smoke_pressure(z, np.unique(ti[chosen]))
+        if norm_path is not None:
+            # Shared normalization fit once across the train split by
+            # fit_wetlab_tactile_norm.py -- required for anything beyond a
+            # single-episode plumbing smoke. See ROBOT_POSTTRAIN_OPEN_ISSUES.md #3.2.
+            norm = load_normalization(norm_path)
+            norm["source_norm_path"] = str(norm_path)
+        else:
+            norm = fit_smoke_pressure(z, np.unique(ti[chosen]))
         norm["source_episode"] = source.name
         arm = np.array([r["target_aa"] for r in commands])[ai]
         hand = np.array([r["target"] for r in hands])[hi]
@@ -169,7 +176,7 @@ def convert(source, output, allow_unverified_sync):
                      position_roundtrip_error_mm=float(np.max(np.abs(restored_arm[:, :3]-arm[:, :3]))),
                      rotation_roundtrip_error_rad=float(rotation_error.max()),
                      hand_roundtrip_error=float(np.max(np.abs(restored_hand-hand))),
-                     train_only_one_episode=True, end_padding="unchanged reference loader repeat-last",
+                     train_only_one_episode=(norm_path is None), end_padding="unchanged reference loader repeat-last",
                      tactile_units="raw NPZ; physical calibration not certified",
                      tactile_source_file=tactile_source.name,
                      tactile_source_note="delivered right_hand_data.npz is a dead channel on this rig; "
@@ -215,7 +222,7 @@ def convert(source, output, allow_unverified_sync):
     _write_jsonl(meta/"episodes_stats.jsonl",stats)
     _write_jsonl(meta/"tasks.jsonl",[dict(task_index=0,task=TASK)])
     info = _info_json(len(runs),total,data_bytes,video_bytes,list(streams))
-    info["robot_type"] = "xarm6_revo2_smoke_only"
+    info["robot_type"] = "xarm6_revo2_smoke_only" if norm_path is None else "xarm6_revo2"
     (meta/"info.json").write_text(json.dumps(info,indent=2))
     print(json.dumps(audit,indent=2))
 
@@ -225,5 +232,8 @@ if __name__ == "__main__":
     parser.add_argument("source",type=Path)
     parser.add_argument("output",type=Path)
     parser.add_argument("--allow-unverified-sync-smoke",action="store_true")
+    parser.add_argument("--norm-path",type=Path,default=None,
+                         help="Shared tactile normalization from fit_wetlab_tactile_norm.py. "
+                              "Omit only for a single-episode plumbing smoke.")
     args = parser.parse_args()
-    convert(args.source,args.output,args.allow_unverified_sync_smoke)
+    convert(args.source,args.output,args.allow_unverified_sync_smoke,norm_path=args.norm_path)

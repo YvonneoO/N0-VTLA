@@ -164,7 +164,20 @@ def apply_delta(actions: np.ndarray, state: np.ndarray, delta_mask: list[bool]) 
     return actions
 
 
-def compute(spec: dict, max_frames: int | None) -> tuple[dict, int]:
+def _train_episode_indices(repo: Path) -> set[int] | None:
+    """Episode indices tagged split=="train" in meta/episodes.jsonl, or None if the
+    dataset has no split tags (e.g. the single-episode smoke output) -- callers
+    should then use every file, matching the old (pre-split-aware) behavior."""
+    episodes_path = repo / "meta" / "episodes.jsonl"
+    if not episodes_path.is_file():
+        return None
+    rows = [json.loads(line) for line in episodes_path.read_text().splitlines() if line]
+    if not rows or "split" not in rows[0]:
+        return None
+    return {row["episode_index"] for row in rows if row["split"] == "train"}
+
+
+def compute(spec: dict, max_frames: int | None, train_only: bool = False) -> tuple[dict, int]:
     repo = Path(spec["repo_id"])
     if not (repo / "data").is_dir():
         raise FileNotFoundError(f"dataset data directory not found: {repo / 'data'}")
@@ -172,7 +185,13 @@ def compute(spec: dict, max_frames: int | None) -> tuple[dict, int]:
     action_stats = RunningStats()
     processed = 0
 
+    train_indices = _train_episode_indices(repo) if train_only else None
+    if train_only and train_indices is None:
+        raise ValueError("--train-only requested but meta/episodes.jsonl has no split tags")
+
     for parquet_path in sorted((repo / "data").rglob("*.parquet")):
+        if train_indices is not None and int(parquet_path.stem.split("_")[-1]) not in train_indices:
+            continue
         table = pq.read_table(parquet_path, columns=["observation.state", "action"])
         state = read_fixed_list(table, "observation.state")
         action = read_fixed_list(table, "action")
@@ -223,6 +242,10 @@ def main() -> None:
     )
     parser.add_argument("--asset-id", help="Asset id directory. Defaults to basename of --repo-id.")
     parser.add_argument("--max-frames", type=int, default=None)
+    parser.add_argument("--train-only", action="store_true",
+                         help="Only fit on episodes tagged split==\"train\" in meta/episodes.jsonl "
+                              "(requires a dataset built with split tags, e.g. "
+                              "build_wetlab_canonical_dataset.py). Errors if the dataset has no tags.")
     parser.add_argument(
         "--repo-root",
         default=None,
@@ -231,7 +254,7 @@ def main() -> None:
     args = parser.parse_args()
 
     train_config_name, spec = resolve_spec(args)
-    payload, processed = compute(spec, args.max_frames)
+    payload, processed = compute(spec, args.max_frames, train_only=args.train_only)
     repo_root = Path(args.repo_root).resolve() if args.repo_root else Path(__file__).resolve().parents[1]
     output_dir = repo_root / "assets" / train_config_name / spec["asset_id"]
     output_dir.mkdir(parents=True, exist_ok=True)
