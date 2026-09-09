@@ -1,5 +1,8 @@
 # Wet-Lab Post-Training Smoke
 
+For download locations and the shortest launch instructions, see
+[Robot Post-Training: Lab Setup](ROBOT_POSTTRAIN_QUICKSTART.md).
+
 ## Scope
 
 This is an independent official-base robot post-training plumbing test, not a
