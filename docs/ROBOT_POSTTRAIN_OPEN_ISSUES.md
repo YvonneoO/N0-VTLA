@@ -516,13 +516,28 @@ reused as if it were a valid train-only result — it was never meant to be one.
     `verify_wetlab_smoke.py batch` against `canonical_wetlab_v2_train` (still
     passing). Steps 4-8 above and the artifacts they reference are superseded —
     see §3.8 for the full account.
-12. **Next**: repeat the single-episode-smoke-style training-loop check (the
-    `verify_wetlab_smoke.py checkpoint` mode, or just a short real run) against
-    `canonical_wetlab_v2_train` specifically — everything checked so far on the
-    `_v2` artifacts is data-pipeline correctness (batch shapes, masks,
-    normalization), not yet a training run on the leakage-fixed data. The
-    existing `wetlab_full_v1_speedtest` run is on the superseded `_v1` directory
-    and is timing-only, not a substitute.
+12. ~~Repeat the training-loop check against `canonical_wetlab_v2_train`
+    specifically.~~ DONE: a 300-step single-GPU run, then a 300-step 4-GPU DDP
+    run (see §3.6 — multi-GPU turned out to work fine, the earlier "stall" was
+    GPU contention from other jobs, not a bug), both against
+    `canonical_wetlab_v2_train`, confirmed training steps, gradient sync, and a
+    full DDP checkpoint save/reload path all work.
+13. **In progress**: the real 20,000-step run, `wetlab_v2_train_full_run1`
+    (started 2026-09-09 08:46, 4-GPU DDP on physical GPUs 6/0/1/2, official
+    base init, config defaults otherwise). Checkpoints land every 5,000 steps
+    at
+    `/DATA2/qianqian/N0-VTLA/checkpoints/vtla_tactile_posttrain/wetlab_v2_train_full_run1/`
+    (~22.5 GB each, ~90 GB total for all 4 — the PyTorch training path doesn't
+    auto-prune old checkpoints, `keep_period` is JAX-path-only and unused here).
+    Resumable with `--resume` + the same `EXP_NAME` (restores model, optimizer
+    state, and `global_step`; auto-picks the latest complete checkpoint,
+    ignoring any half-written `tmp_*`). **Next real decision point**: once
+    checkpoints exist, evaluate steps 5000/10000/15000/20000 against
+    `canonical_wetlab_v2_holdout` (the block-level held-out set, §5.1.8/§3.8) —
+    not against final training loss, and not against `canonical_wetlab_v2_val`
+    alone (that split shares tacWAM's episode-random-not-block-aware leakage
+    risk, §2) — to pick which checkpoint is actually worth comparing against
+    tacWAM's own reported results or attempting a real-robot rollout with.
 
 ## 5. Verification and visualization checklist before scaling past one episode
 

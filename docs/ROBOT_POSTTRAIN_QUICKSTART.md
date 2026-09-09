@@ -60,6 +60,43 @@ all work correctly — that validation run and all older superseded artifacts
 (`canonical_smoke_v1`, `canonical_wetlab_v1`, their checkpoints and norm
 stats, `wetlab_full_v1_speedtest`) have been deleted from lab (~44 GB freed).
 
+**Live progress (last checked 2026-09-09 08:59):** step 265/20,000, ~13 min
+elapsed, ~2.5-3.3s/step (a bit faster than the 300-step validation run's ~5s/step
+— GPU contention from other users' jobs on 0,1,2 varies over time). Loss has
+already dropped from 0.93 (step 0) to the 0.02-0.04 range by step 265, while
+`lr` is still ramping through warmup (500 steps) toward peak 2e-5. **Watch
+item**: with only 13,812 train frames, 20,000 steps is ~92 passes over the same
+52 episodes — a loss this low this early is expected small-dataset behavior,
+not evidence of a good policy yet. Don't just take the step-20000 checkpoint as
+"the" result: evaluate the saved checkpoints (steps 5000/10000/15000/20000)
+against `canonical_wetlab_v2_val` and especially `canonical_wetlab_v2_holdout`
+(the latter is the one actually held out for this purpose, see §5.1.8/§3.8) and
+pick based on that, not on final training loss.
+
+**Checkpoints**: every `save_interval=5000` steps (config default) →
+steps 5000/10000/15000/20000, each ~22.5 GB (`model.safetensors` 8.25 GB +
+`optimizer.pt` 14.3 GB) under
+`/DATA2/qianqian/N0-VTLA/checkpoints/vtla_tactile_posttrain/wetlab_v2_train_full_run1/`.
+The PyTorch training path used here does **not** auto-delete older checkpoints
+(the config's `keep_period` field is JAX-checkpoint-path-only, unused by
+`train_pytorch.py`) — all 4 will coexist (~90 GB total), clean up manually if
+needed once you know which checkpoint(s) to keep.
+
+**If training is interrupted**, resume with the same `EXP_NAME` plus `--resume`
+(auto-finds the latest complete checkpoint under that experiment's checkpoint
+dir, ignoring any half-written `tmp_*`; restores model weights, full optimizer
+state, and `global_step`, so the LR schedule continues from the right point
+rather than re-warming-up):
+```bash
+cd /DATA2/qianqian/N0-VTLA
+export CUDA_VISIBLE_DEVICES=6,0,1,2 NPROC_PER_NODE=4
+export VTLA_DATASET_PATH=/DATA2/qianqian/n0vtla_robot_audit/canonical_wetlab_v2_train
+export VTLA_ASSET_ID=wetlab_v2_train
+export CONFIG_NAME=vtla_tactile_posttrain
+export EXP_NAME=wetlab_v2_train_full_run1
+bash train.sh --resume
+```
+
 Still not done: robot controller integration and any real-world deployment.
 Physical cross-host sync remains permanently unverified for this dataset (see
 `ROBOT_POSTTRAIN_OPEN_ISSUES.md` §3.3) — this training run does not resolve
