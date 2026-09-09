@@ -139,7 +139,18 @@ def convert(source, output, allow_unverified_sync, norm_path=None):
             gap = t - csv_t[ids]
             if not np.allclose(csv_t[ids] / 1e9, f[f"obs/video/{name}/epoch"][:], rtol=0, atol=2e-6):
                 raise ValueError("H5/CSV timestamp mapping mismatch")
-            valid &= f[f"valid/{name}"][:].astype(bool) & (gap >= 0) & (gap <= 50_000_000)
+            # The delivered src_idx is a NEAREST-frame mapping, not a most-recent-past
+            # one: gap = t - frame_timestamp straddles zero by design (±half a frame
+            # period is typical) depending on video/robot clock phase, which differs
+            # per episode. A one-sided gap>=0 causal requirement only happened to pass
+            # on the single episode this adapter was first tuned against (favorable
+            # phase by luck) and silently produced zero usable rows on the majority of
+            # the other 52 -- confirmed episode-by-episode, see
+            # ROBOT_POSTTRAIN_OPEN_ISSUES.md #3.3(update)/#5.1. Use the same symmetric
+            # tolerance already established for camera alignment elsewhere in this
+            # codebase (CAMERA_ALIGNMENT_TOLERANCE_NS, itw_pressure/pad_data.py) rather
+            # than an invented one-sided cutoff.
+            valid &= f[f"valid/{name}"][:].astype(bool) & (np.abs(gap) <= 17_500_000)
             video_indices[name] = ids
             camera_gaps[name] = dict(min_ms=float(gap.min()/1e6), max_ms=float(gap.max()/1e6))
         valid &= (t >= manifest["trial"]["engaged_host_ns"]) & (t < manifest["trial"]["released_host_ns"])
@@ -169,7 +180,9 @@ def convert(source, output, allow_unverified_sync, norm_path=None):
                      action_contract="absolute issued targets; loader subtracts current EEF state",
                      source_rows=len(t), selected_rows=len(chosen),
                      runs=[[int(g[0]), int(g[-1]), len(g)] for g in runs],
-                     max_command_age_ms=150, max_sensor_age_ms=50, camera_gaps=camera_gaps,
+                     max_command_age_ms=150, max_sensor_age_ms=50,
+                     camera_alignment_tolerance_ms=17.5, camera_alignment_symmetric=True,
+                     camera_gaps=camera_gaps,
                      max_arm_age_ms=float(aa[chosen].max()/1e6),
                      max_hand_command_age_ms=float(hand_command_age[chosen].max()/1e6),
                      max_tactile_age_ms=float(ta[chosen].max()/1e6),
