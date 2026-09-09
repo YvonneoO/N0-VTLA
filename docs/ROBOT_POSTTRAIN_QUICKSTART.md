@@ -5,31 +5,54 @@
 The training pipeline is installed and smoke-tested in lab Docker `n0vtla`.
 It initializes from the official N0-VTLA base, **not our human Stage-1 checkpoint**.
 
-All 53 raw episodes are downloaded and converted into one canonical dataset,
-**superseding the single-episode `canonical_smoke_v1` described below** (that
-dataset was built from a since-fixed dead tactile channel and an over-strict
-camera-alignment check that discarded most episodes — do not reuse it):
+All 53 raw episodes are downloaded and converted into **three physically
+separate canonical datasets** (train/val/holdout — see below for why they must
+be separate directories, not one tagged directory), **superseding both
+`canonical_smoke_v1` and the single combined `canonical_wetlab_v1` described
+further below** (the former was built from a since-fixed dead tactile channel
+and an over-strict camera-alignment check that discarded most episodes; the
+latter silently trained on its val split too — see `ROBOT_POSTTRAIN_OPEN_ISSUES.md`
+§3.8 — neither should be reused):
 
-- Full canonical dataset: `/DATA2/qianqian/n0vtla_robot_audit/canonical_wetlab_v1`
-  — 68 episodes / 17,861 frames (59 train / 9 val), built by
-  `scripts/build_wetlab_canonical_dataset.py` from a shared tactile normalization
-  (`scripts/fit_wetlab_tactile_norm.py`) and the split manifest
-  `scripts/wetlab_split_v1_tacwam_match.json` (reproduces tacWAM's own default
-  48/5 episode-random train/val split for direct comparability, plus a separate
-  block-aware held-out set for checkpoint-selection/deployment decisions).
+- **Use this one for training**: `/DATA2/qianqian/n0vtla_robot_audit/canonical_wetlab_v2_train`
+  — 52 canonical episodes / 13,812 frames, from 42 mutually-exclusive source
+  episodes. Sibling directories `canonical_wetlab_v2_val` (9 episodes / 1,820
+  frames, 5 source) and `canonical_wetlab_v2_holdout` (7 episodes / 2,229
+  frames, 6 source, for checkpoint-selection/deployment gating — never for
+  training) hold the other two partitions. Built by
+  `scripts/build_wetlab_canonical_dataset.py --which {train,val,holdout}` from
+  a shared tactile normalization (`scripts/fit_wetlab_tactile_norm.py`, fit
+  restricted to each train episode's own trial window) and the split manifest
+  `scripts/wetlab_split_v1_tacwam_match.json` (train/val approximate tacWAM's
+  own default 48/5 episode-random split, minus the 6 block-holdout episodes,
+  for direct comparability; see the manifest's `train_tacwam_raw`/`val_tacwam_raw`
+  for the un-adjusted lists tacWAM itself uses).
+  **Why three directories and not one with a split tag**:
+  `n0vtla/training/data_loader.py`'s loader has no concept of a per-episode
+  split tag and doesn't read `meta/info.json`'s `splits` field either — it
+  loads every episode under whatever root `VTLA_DATASET_PATH` points at,
+  unconditionally. Physical separation is the only thing this loader respects.
 - Train-only pose/action norm stats:
-  `/DATA2/qianqian/n0vtla_robot_audit/assets/vtla_tactile_posttrain/wetlab_full_v1/norm_stats.json`
-  (via `compute_canonical_norm.py --train-only`).
+  `/DATA2/qianqian/N0-VTLA/assets/vtla_tactile_posttrain/wetlab_v2_train/norm_stats.json`
+  (`compute_canonical_norm.py` against `canonical_wetlab_v2_train` directly —
+  no `--train-only` flag needed now that the directory itself is train-only).
 - Fixed since the original smoke: the delivered `right_hand_data.npz` is a dead
-  channel on this rig (live signal is in `left_hand_data.npz`), and the original
-  camera causal-gap check silently discarded 31/53 episodes (see
-  `ROBOT_POSTTRAIN_OPEN_ISSUES.md` §3.1 and §3.7).
+  channel on this rig (live signal is in `left_hand_data.npz`); the original
+  camera causal-gap check silently discarded 31/53 episodes; and the training
+  loader was silently training on val (and even holdout) episodes because
+  nothing enforced the split at the physical-directory level (see
+  `ROBOT_POSTTRAIN_OPEN_ISSUES.md` §3.1, §3.7, §3.8).
 
-Still not done: a real (non-3-step) training run on `canonical_wetlab_v1`, robot
-controller integration, and any real-world deployment. The single-episode smoke
-run described below (three optimizer steps, official base) remains the only
-completed training-loop validation; it should be repeated against
-`canonical_wetlab_v1` before treating it as current.
+Still not done: a real (non-3-step) training run on `canonical_wetlab_v2_train`,
+robot controller integration, and any real-world deployment. A 300-step timing
+calibration run (`wetlab_full_v1_speedtest`) was launched against the older,
+leaky `canonical_wetlab_v1` purely to measure per-step wall-clock time (~9.3s/step
+steady-state on one GPU) — that measurement is unaffected by the leakage bug,
+but its checkpoint is not a valid trained result and should not be reused as
+one. The single-episode smoke run described below (three optimizer steps,
+official base) remains the only completed *correctness* validation of the
+training loop itself; repeat it against `canonical_wetlab_v2_train` before
+treating that as current.
 
 ## Data and Files
 

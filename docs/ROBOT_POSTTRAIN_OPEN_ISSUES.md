@@ -350,6 +350,79 @@ card's own reported 14,356 action frames, consistent with this adapter's
 zero-order-hold construction keeping small command-loop gaps rather than dropping
 them (see §2's action-source design-choice row).
 
+### 3.8 RESOLVED: three train/val leakage bugs found by review
+
+Found by review and fixed 2026-09-09, before the `canonical_wetlab_v1` /
+`wetlab_full_v1` artifacts from §3.4/§3.7/§3.2's updates were used for anything
+beyond the timing calibration in §4. All three came from the same root cause:
+this pipeline recorded *which split an episode belongs to* as a tag, without
+verifying anything downstream actually reads that tag.
+
+1. **The training loader ignores the split tag entirely.**
+   `n0vtla/training/data_loader.py`'s `LocalLeRobotV3Dataset` (`_load_episodes_v3`,
+   called from `__init__`) loads every episode under the given root
+   unconditionally — it has no code path that reads a per-episode `split` field,
+   and it does not read `meta/info.json`'s standard LeRobot `splits` field either
+   (`grep -c split n0vtla/training/data_loader.py` → 0 relevant hits).
+   `canonical_wetlab_v1`'s `info.json` declared `"splits": {"train": "0:68"}` —
+   the entire 68-episode dataset, val included. Pointing `VTLA_DATASET_PATH` at
+   it therefore trained on all 17,861 frames, not the intended 16,041 train-only
+   frames; the 9 val episodes were never actually held out from anything.
+   **Fix**: `build_wetlab_canonical_dataset.py` now takes `--which
+   {train,val,holdout}` and writes one physically separate directory per split.
+   Physical separation is the only mechanism this loader respects — a tag on a
+   shared directory is not enough, however it's spelled.
+2. **`block_holdout_v1`'s 6 episodes were a subset of the tacWAM-matching
+   "train" list.** So even after fixing (1), those 6 would still have been
+   trained on — a "held-out" set that was simultaneously in the training set
+   defeats its own purpose (checkpoint selection / deployment-readiness gating
+   per §5.1.8's original intent). **Fix**: regenerated
+   `wetlab_split_v1_tacwam_match.json` so `train` (was 48, now **42**), `val`
+   (**5**, unchanged — no overlap existed here), and `block_holdout_v1` (**6**)
+   are mutually exclusive and jointly exhaustive over all 53 source episodes.
+   The original tacWAM-matching 48/5 lists are kept as
+   `train_tacwam_raw`/`val_tacwam_raw` for citation/comparability only — do not
+   build a dataset from those directly, they overlap `block_holdout_v1`.
+3. **The tactile normalization fitter sampled from the wrong window.**
+   `fit_wetlab_tactile_norm.py` sampled `rng.integers(0, n, ...)` over an entire
+   raw `left_hand_data.npz` file (`n ≈ 7807` frames — the whole block-level
+   capture, per §1's "one block, hard-linked into every trial"), not the
+   specific train episode's own trial window. Three blocks (b05, b08, b11) mix
+   train and val episodes together, sharing the same underlying file — replaying
+   the fit with its own seed showed the large majority of the 1,920 samples (48
+   episodes × 40 samples) landed outside the fitting episode's own window
+   entirely, and 79 landed inside a *different, val-assigned* trial's window in
+   the same shared file. **Fix**: `wetlab_smoke_adapter.py`'s windowing logic
+   (previously duplicated inline in both `convert()` and nowhere else) is now
+   factored out into `resolve_episode_window()` /
+   `resolve_own_tactile_frames()`; `convert()` calls the shared function instead
+   of recomputing it, and the fitter now samples only from each episode's own
+   resolved frame indices.
+
+Re-fit and rebuilt as `wetlab_tactile_norm_v2.json` and
+`canonical_wetlab_v2_{train,val,holdout}` (all on lab under
+`/DATA2/qianqian/n0vtla_robot_audit/`). Verified after building: 52/9/7
+canonical episodes (13,812/1,820/2,229 frames) from the 42/5/6 source
+episodes — sums to the same 68 episodes / 17,861 frames as the old leaky
+`canonical_wetlab_v1`, confirming the fix repartitions the same data rather
+than losing or duplicating any of it. Independently re-derived each
+directory's `source_uuid` set from `meta/episodes.jsonl` and confirmed it
+exactly equals the expected train/val/holdout uuid set with zero leakage
+either direction. Pose/action norm stats refit against
+`canonical_wetlab_v2_train` only (no `--train-only` flag needed anymore —
+physical separation means every episode in that directory already is train):
+`/DATA2/qianqian/N0-VTLA/assets/vtla_tactile_posttrain/wetlab_v2_train/norm_stats.json`.
+`verify_wetlab_smoke.py batch` against `canonical_wetlab_v2_train` still
+passes (`delta_stats_match: true`, round-trip error `1.53e-5`, same as before).
+
+Anything built from `_v1` (`canonical_wetlab_v1`, `wetlab_full_v1/norm_stats.json`,
+`wetlab_tactile_norm_v1.json`) is superseded — not deleted for now, but do not
+use it for anything beyond what's already been reported from it. The
+in-progress `wetlab_full_v1_speedtest` timing run (§4) was training on the old
+leaky directory; that does not affect its per-step wall-clock measurement
+(this bug class doesn't change compute cost), but its checkpoint should not be
+reused as if it were a valid train-only result — it was never meant to be one.
+
 ## 4. Recommended order of work
 
 1. ~~§3.1 — verify the tactile swap.~~ DONE, confirmed on all 53 episodes.
@@ -396,13 +469,26 @@ them (see §2's action-source design-choice row).
    `/DATA2/qianqian/N0-VTLA/assets/vtla_tactile_posttrain/wetlab_full_v1/norm_stats.json`.
    `checkpoint` check still needs a real (non-smoke) training run to check
    against — deferred to whenever the next training run happens.
-9. **Next**: write down a final decision (with citation to §1.4's numbers) on
-   whether to keep the commanded/absolute-delta contract or move to tacWAM's
-   measured/framewise-delta contract — this determines what "the same data"
-   means for the backbone comparison, so it should be fixed before either side's
-   numbers are treated as final.
+9. ~~Write down a final decision on commanded/absolute-delta vs. measured/
+   framewise-delta.~~ DONE, see §6: kept commanded/absolute-delta.
 10. §3.5 and §3.6 (checkpoint off-by-one, multi-GPU) whenever convenient before a
     full-scale run; neither blocks the correctness work above.
+11. ~~§3.8 — fix the three train/val leakage bugs~~ (loader ignores split tags
+    entirely; block-holdout episodes were a subset of train; tactile norm fit
+    sampled outside its own episode's window). DONE: rebuilt as
+    `wetlab_tactile_norm_v2.json` and physically separate
+    `canonical_wetlab_v2_{train,val,holdout}` directories (52/9/7 episodes,
+    13,812/1,820/2,229 frames), refit `wetlab_v2_train/norm_stats.json`, reran
+    `verify_wetlab_smoke.py batch` against `canonical_wetlab_v2_train` (still
+    passing). Steps 4-8 above and the artifacts they reference are superseded —
+    see §3.8 for the full account.
+12. **Next**: repeat the single-episode-smoke-style training-loop check (the
+    `verify_wetlab_smoke.py checkpoint` mode, or just a short real run) against
+    `canonical_wetlab_v2_train` specifically — everything checked so far on the
+    `_v2` artifacts is data-pipeline correctness (batch shapes, masks,
+    normalization), not yet a training run on the leakage-fixed data. The
+    existing `wetlab_full_v1_speedtest` run is on the superseded `_v1` directory
+    and is timing-only, not a substitute.
 
 ## 5. Verification and visualization checklist before scaling past one episode
 
