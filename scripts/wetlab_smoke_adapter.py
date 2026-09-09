@@ -104,7 +104,20 @@ def convert(source, output, allow_unverified_sync):
     commands = [r for r in command_rows if r.get("accepted") is True and r.get("rc") == 0 and r.get("clutch")]
     hands = [json.loads(l) for l in (source / "robot/hand.jsonl").open()]
     hands = [r for r in hands if r.get("t_cmd_ns") is not None and r.get("target") is not None]
-    with h5py.File(source / "episode_30hz.h5", "r") as f, np.load(source / "right_hand_data.npz", allow_pickle=False) as z:
+    # The delivered "right_hand_data.npz" is a dead channel on this rig (single right
+    # arm/hand; robot/manifest.json declares tactile_left absent). The live 880-taxel
+    # signal is actually stored under the "left"-named file. Read from it, but keep
+    # every downstream hand="right" label: physically this is still the right glove,
+    # only the delivered filename is swapped. See ROBOT_POSTTRAIN_OPEN_ISSUES.md §3.1.
+    tactile_source = source / "left_hand_data.npz"
+    with h5py.File(source / "episode_30hz.h5", "r") as f, np.load(tactile_source, allow_pickle=False) as z:
+        pad_std = max(float(np.std(np.asarray(z[f"tactile_{pad}"], np.float64))) for pad in PAD_IDS)
+        if pad_std < 1e-4:
+            raise ValueError(
+                f"{tactile_source.name} looks dead (max per-pad std {pad_std:.2e}); "
+                "the live/dead file assignment may have changed upstream -- verify "
+                "before trusting this conversion"
+            )
         t = f["time/timestamp_ns"][:]
         ai, aa, av = causal_indices([r["host_timestamp_ns"] for r in commands], t, 150_000_000)
         # A target must already have been issued AND its logged row available.
@@ -157,7 +170,11 @@ def convert(source, output, allow_unverified_sync):
                      rotation_roundtrip_error_rad=float(rotation_error.max()),
                      hand_roundtrip_error=float(np.max(np.abs(restored_hand-hand))),
                      train_only_one_episode=True, end_padding="unchanged reference loader repeat-last",
-                     tactile_units="raw NPZ; physical calibration not certified")
+                     tactile_units="raw NPZ; physical calibration not certified",
+                     tactile_source_file=tactile_source.name,
+                     tactile_source_note="delivered right_hand_data.npz is a dead channel on this rig; "
+                     "live signal read from left_hand_data.npz instead, labeled as right-hand data "
+                     "because that is the physically instrumented hand")
     meta = output / "meta"
     meta.mkdir(parents=True)
     (meta / "audit.json").write_text(json.dumps(audit, indent=2))
@@ -185,7 +202,7 @@ def convert(source, output, allow_unverified_sync):
         for key,name in streams.items():
             dst = output / "videos/chunk-000" / key / f"episode_{e:06d}.mp4"
             if name == "right":
-                video_bytes += write_pressure_video(source/"right_hand_data.npz",dst,ti[g],norm,hand="right")
+                video_bytes += write_pressure_video(tactile_source,dst,ti[g],norm,hand="right")
             else:
                 video_bytes += write_aligned_rgb(source/f"{name}.mp4",dst,video_indices[name][g])
         episodes.append(dict(episode_index=e,tasks=[TASK],length=n))
