@@ -320,6 +320,10 @@ default `save_interval=5000` with `num_train_steps=3`, which is exactly the
 non-dividing case that lost the final step. Pick step counts accordingly rather
 than fixing the underlying vendor code.
 
+Confirmed in practice: the real `wetlab_v2_train_full_run1` run (§4 step 13)
+saved all four expected checkpoints (5000/10000/15000/20000) cleanly, including
+the true final step — as predicted, since 20000 is a multiple of 5000.
+
 ### 3.6 RESOLVED (was a false alarm from GPU contention, not a code bug): multi-GPU NCCL
 
 `WETLAB_POSTTRAIN_SMOKE.md` recorded multi-GPU NCCL initialization stalling on
@@ -522,22 +526,59 @@ reused as if it were a valid train-only result — it was never meant to be one.
     GPU contention from other jobs, not a bug), both against
     `canonical_wetlab_v2_train`, confirmed training steps, gradient sync, and a
     full DDP checkpoint save/reload path all work.
-13. **In progress**: the real 20,000-step run, `wetlab_v2_train_full_run1`
-    (started 2026-09-09 08:46, 4-GPU DDP on physical GPUs 6/0/1/2, official
-    base init, config defaults otherwise). Checkpoints land every 5,000 steps
-    at
+13. ~~The real 20,000-step run, `wetlab_v2_train_full_run1`.~~ DONE: started
+    2026-09-09 08:46, 4-GPU DDP on physical GPUs 6/0/1/2, official base init,
+    config defaults otherwise. Completed 2026-09-10 05:04 (~20h14m wall time,
+    final `loss=0.0016`, `lr` decayed to `end_lr=2.00e-06` as scheduled, no
+    interruptions). Checkpoints at steps 5000/10000/15000/20000, each ~22.5 GB
+    (`model.safetensors` + `optimizer.pt` + `metadata.pt` + `assets/`), under
     `/DATA2/qianqian/N0-VTLA/checkpoints/vtla_tactile_posttrain/wetlab_v2_train_full_run1/`
-    (~22.5 GB each, ~90 GB total for all 4 — the PyTorch training path doesn't
-    auto-prune old checkpoints, `keep_period` is JAX-path-only and unused here).
-    Resumable with `--resume` + the same `EXP_NAME` (restores model, optimizer
-    state, and `global_step`; auto-picks the latest complete checkpoint,
-    ignoring any half-written `tmp_*`). **Next real decision point**: once
-    checkpoints exist, evaluate steps 5000/10000/15000/20000 against
-    `canonical_wetlab_v2_holdout` (the block-level held-out set, §5.1.8/§3.8) —
-    not against final training loss, and not against `canonical_wetlab_v2_val`
-    alone (that split shares tacWAM's episode-random-not-block-aware leakage
-    risk, §2) — to pick which checkpoint is actually worth comparing against
-    tacWAM's own reported results or attempting a real-robot rollout with.
+    (not auto-pruned, ~90 GB total — see the quickstart doc).
+14. ~~Evaluate the checkpoints before any real-robot attempt.~~ DONE, via the
+    dataset card's own §6 offline ship-gate rather than a from-scratch accuracy
+    eval (`scripts/eval_wetlab_ship_gate.py`, added specifically for this —
+    reuses `n0vtla.policies.policy_config.create_trained_policy` for correct
+    normalization/delta/absolute-action handling, evaluated on
+    `canonical_wetlab_v2_holdout` rather than the card's own "≥2 train
+    episodes"). Results (60 samples each):
+
+    | | step 15000 | step 20000 | reference (demo, 30Hz) |
+    |---|---|---|---|
+    | mean step (mm) | 2.72 | 2.72 | 3.77 |
+    | p95 step (mm) | 6.91 | 6.96 | 10.86 |
+    | reversal rate | 0.099 | 0.091 | 0.076 |
+    | verdict | ok_so_far | ok_so_far | — |
+
+    15000 and 20000 are nearly identical — the model had converged by 15000,
+    and training on to 20000 neither helped nor hurt by this measure. Both
+    clear the gate (step size below reference, reversal rate close to
+    reference, nowhere near the "~2x step" / "40-50% reversal" noise-dominated
+    signature). **This confirms the checkpoint predicts demonstration-scale,
+    non-oscillating motion — it does not confirm task success**; no real-robot
+    trial has been attempted with either checkpoint (see §3.3 — physical sync
+    remains permanently unverified for this dataset regardless of ship-gate
+    result).
+15. ~~Upload checkpoints and ship-gate results.~~ DONE: all four checkpoints
+    and both ship-gate reports uploaded to
+    `qqyang/zihiao_real_test/n0vtla_wetlab_posttrain/` on Hugging Face
+    (`checkpoint_5000/10000/15000/20000`, `ship_gate_15000.json`,
+    `ship_gate_20000.json`). Note for future uploads to this account: this repo
+    already holds unrelated tacWAM ablation artifacts
+    (`wetlab_hand_action_target_ablation/`,
+    `wetlab_tactile_normalization_ablation/`) predating this work — it is a
+    shared/multi-project space, not N0-VTLA-specific; the flat
+    `n0vtla_wetlab_posttrain/` prefix (no run-name subfolder, per explicit
+    instruction) keeps this project's files namespaced away from those. Not yet
+    added to the cross-project HF repo registry in `@TAMU` memory —
+    worth doing so this doesn't get rediscovered by surprise again.
+16. **Next**: no further correctness work is blocking. Open, larger questions:
+    whether to attempt a real-robot rollout at all given physical sync is
+    permanently unverified (§3.3); if so, what supervised low-speed deployment
+    gates to add first (§3's HUMAN_PRETRAIN_AND_ROBOT_POSTTRAIN.md "Post-Training
+    and Deployment Gates" section already sketches this); and whether/how to
+    obtain or approximate a comparable number from tacWAM's own reported
+    results for the backbone comparison this project's Purpose section frames
+    as the actual goal.
 
 ## 5. Verification and visualization checklist before scaling past one episode
 

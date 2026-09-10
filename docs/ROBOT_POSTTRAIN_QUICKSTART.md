@@ -1,6 +1,6 @@
 # Robot Post-Training: Lab Setup
 
-## Status (updated 2026-09-09 — see [ROBOT_POSTTRAIN_OPEN_ISSUES.md](ROBOT_POSTTRAIN_OPEN_ISSUES.md) for full history)
+## Status (updated 2026-09-10 — see [ROBOT_POSTTRAIN_OPEN_ISSUES.md](ROBOT_POSTTRAIN_OPEN_ISSUES.md) for full history)
 
 The training pipeline is installed and smoke-tested in lab Docker `n0vtla`.
 It initializes from the official N0-VTLA base, **not our human Stage-1 checkpoint**.
@@ -43,50 +43,66 @@ latter silently trained on its val split too — see `ROBOT_POSTTRAIN_OPEN_ISSUE
   nothing enforced the split at the physical-directory level (see
   `ROBOT_POSTTRAIN_OPEN_ISSUES.md` §3.1, §3.7, §3.8).
 
-**A real full training run is in progress**: `wetlab_v2_train_full_run1`, 4-GPU
-DDP (physical GPUs 6,0,1,2 — chosen because they were genuinely idle per
+**A real full training run completed**: `wetlab_v2_train_full_run1`, 4-GPU DDP
+(physical GPUs 6,0,1,2 — chosen because they were genuinely idle per
 `nvidia-smi --query-compute-apps`, not just low `utilization.gpu`), 20,000
 steps at the `vtla_tactile_posttrain` config's own defaults (batch 64 global /
 16 per GPU, warmup 500, peak LR 2e-5, decay to 2e-6 over 20,000 steps,
 `save_interval=5000`), against `canonical_wetlab_v2_train` from official base.
-Multi-GPU DDP was previously believed broken on this host (see
+Ran 2026-09-09 08:46 → 2026-09-10 05:04 (~20h14m), no interruptions, final
+`loss=0.0016`, `lr` decayed to `end_lr=2.00e-06` exactly as scheduled. Multi-GPU
+DDP was previously believed broken on this host (see
 `ROBOT_POSTTRAIN_OPEN_ISSUES.md` §3.6) — retested and it works; the earlier
 stalls were caused by GPU contention with other users' jobs, not a code or
 container-config bug. Preceded by a 300-step DDP validation run on the same
-dataset (steady-state ~5s/step on 4 GPUs vs ~9.5s/step on 1) that confirmed
-training steps, gradient sync, and a full checkpoint save (step 100:
-`model.safetensors` + `optimizer.pt`, training continued normally afterward)
-all work correctly — that validation run and all older superseded artifacts
-(`canonical_smoke_v1`, `canonical_wetlab_v1`, their checkpoints and norm
-stats, `wetlab_full_v1_speedtest`) have been deleted from lab (~44 GB freed).
+dataset that confirmed training steps, gradient sync, and a full checkpoint
+save all work correctly — that validation run and all older superseded
+artifacts (`canonical_smoke_v1`, `canonical_wetlab_v1`, their checkpoints and
+norm stats, `wetlab_full_v1_speedtest`) have been deleted from lab (~44 GB
+freed).
 
-**Live progress (last checked 2026-09-09 08:59):** step 265/20,000, ~13 min
-elapsed, ~2.5-3.3s/step (a bit faster than the 300-step validation run's ~5s/step
-— GPU contention from other users' jobs on 0,1,2 varies over time). Loss has
-already dropped from 0.93 (step 0) to the 0.02-0.04 range by step 265, while
-`lr` is still ramping through warmup (500 steps) toward peak 2e-5. **Watch
-item**: with only 13,812 train frames, 20,000 steps is ~92 passes over the same
-52 episodes — a loss this low this early is expected small-dataset behavior,
-not evidence of a good policy yet. Don't just take the step-20000 checkpoint as
-"the" result: evaluate the saved checkpoints (steps 5000/10000/15000/20000)
-against `canonical_wetlab_v2_val` and especially `canonical_wetlab_v2_holdout`
-(the latter is the one actually held out for this purpose, see §5.1.8/§3.8) and
-pick based on that, not on final training loss.
+**Checkpoints**: steps 5000/10000/15000/20000, each ~22.5 GB
+(`model.safetensors` 8.25 GB + `optimizer.pt` 14.3 GB) under
+`/DATA2/qianqian/N0-VTLA/checkpoints/vtla_tactile_posttrain/wetlab_v2_train_full_run1/`
+on lab (not auto-pruned — the config's `keep_period` field is
+JAX-checkpoint-path-only, unused by `train_pytorch.py` — all 4 coexist,
+~90 GB total). **All four, plus both ship-gate reports below, are also
+uploaded to**
+[`qqyang/zihiao_real_test/n0vtla_wetlab_posttrain/`](https://huggingface.co/datasets/qqyang/zihiao_real_test/tree/main/n0vtla_wetlab_posttrain)
+on Hugging Face (`checkpoint_5000/10000/15000/20000`,
+`ship_gate_15000.json`, `ship_gate_20000.json`). That repo already holds
+unrelated tacWAM ablation artifacts from before this work — it's a
+shared/multi-project space, not N0-VTLA-specific; keep using the flat
+`n0vtla_wetlab_posttrain/` prefix (no run-name subfolder) for anything from
+this project so it stays namespaced away from those.
 
-**Checkpoints**: every `save_interval=5000` steps (config default) →
-steps 5000/10000/15000/20000, each ~22.5 GB (`model.safetensors` 8.25 GB +
-`optimizer.pt` 14.3 GB) under
-`/DATA2/qianqian/N0-VTLA/checkpoints/vtla_tactile_posttrain/wetlab_v2_train_full_run1/`.
-The PyTorch training path used here does **not** auto-delete older checkpoints
-(the config's `keep_period` field is JAX-checkpoint-path-only, unused by
-`train_pytorch.py`) — all 4 will coexist (~90 GB total), clean up manually if
-needed once you know which checkpoint(s) to keep.
+**Offline ship-gate eval (before touching any real robot)**: the
+`SingleBicycle/tacwam-wetlab-tasks` dataset card's own §6 pre-flight check —
+compare the trained policy's predicted action-chunk step size / direction-
+reversal rate (run open-loop on `canonical_wetlab_v2_holdout`) against the
+demonstrations' own measured 30Hz statistics. Implemented in
+`scripts/eval_wetlab_ship_gate.py` (not something N0-VTLA ships — see
+`ROBOT_POSTTRAIN_OPEN_ISSUES.md` §4 step 14 for why nothing else in this repo
+covers this). Results:
 
-**If training is interrupted**, resume with the same `EXP_NAME` plus `--resume`
-(auto-finds the latest complete checkpoint under that experiment's checkpoint
-dir, ignoring any half-written `tmp_*`; restores model weights, full optimizer
-state, and `global_step`, so the LR schedule continues from the right point
-rather than re-warming-up):
+| | step 15000 | step 20000 | reference (demo, 30Hz) |
+|---|---|---|---|
+| mean step (mm) | 2.72 | 2.72 | 3.77 |
+| p95 step (mm) | 6.91 | 6.96 | 10.86 |
+| reversal rate | 0.099 | 0.091 | 0.076 |
+| verdict | ok_so_far | ok_so_far | — |
+
+15000 and 20000 are nearly identical (the model had converged by 15000); both
+clear the gate — nowhere near the "~2x demo step size" / "40-50% reversal"
+noise-dominated signature that cost tacWAM seven live robot trials once. **This
+says the checkpoint predicts demonstration-scale, non-oscillating motion — it
+does not say the task succeeds.** No real-robot trial has been attempted.
+
+**If a future training run is interrupted**, resume with the same `EXP_NAME`
+plus `--resume` (auto-finds the latest complete checkpoint under that
+experiment's checkpoint dir, ignoring any half-written `tmp_*`; restores model
+weights, full optimizer state, and `global_step`, so the LR schedule continues
+from the right point rather than re-warming-up):
 ```bash
 cd /DATA2/qianqian/N0-VTLA
 export CUDA_VISIBLE_DEVICES=6,0,1,2 NPROC_PER_NODE=4
@@ -100,8 +116,8 @@ bash train.sh --resume
 Still not done: robot controller integration and any real-world deployment.
 Physical cross-host sync remains permanently unverified for this dataset (see
 `ROBOT_POSTTRAIN_OPEN_ISSUES.md` §3.3) — this training run does not resolve
-that, and any resulting checkpoint should still be treated as
-`physical_sync_verified: false` regardless of how well it trains.
+that, and this checkpoint should still be treated as
+`physical_sync_verified: false` regardless of how well it clears the ship gate.
 
 ## Data and Files
 
