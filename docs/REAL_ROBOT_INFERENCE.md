@@ -7,7 +7,7 @@ the actual transform code (`n0vtla/policies/canonical_tactile_policy.py`), not
 inferred from training-side documentation. **What is NOT provided**: any
 robot-specific driver (xArm6 SDK calls, Revo2 motor commands, camera/tactile
 capture), or a safety layer (limits, watchdog, e-stop). That is what you are
-adding. See §5 before sending a single command to the real arm.
+adding. See §6 before sending a single command to the real arm.
 
 ## 0. What's already verified working, and what isn't
 
@@ -25,30 +25,60 @@ adding. See §5 before sending a single command to the real arm.
   training data's), but it does mean you should not expect the offline
   ship-gate result to predict real-world success.
 
-## 1. Starting the server
+## 1. Getting the code, and where the data lives
+
+**Code**: this is not duplicated anywhere else — clone the full repo and check
+out the exact commit this document and the uploaded checkpoints were built
+against, rather than requesting or assembling a partial copy:
 
 ```bash
-cd /DATA2/qianqian/N0-VTLA
+git clone https://github.com/YvonneoO/N0-VTLA
+cd N0-VTLA
+git checkout 4e60f0c2a08b20aefdf98ae7b3177c6469d8a6d6
+pip install -r requirements.txt   # or: see pyproject.toml
+```
+
+`serve_policy.py` needs the full `n0vtla/` package (model implementation,
+training config, transforms, model loader) and `n0vtla/serving/` (the
+websocket server) — all of it is in this repo already; there is nothing
+serve-specific missing from a normal clone. An earlier version of this
+document's Hugging Face upload included a hand-picked subset of files that
+turned out to be missing transitive dependencies (no model implementation, no
+training config, no websocket server) — that subset has been removed from
+Hugging Face. Don't reconstruct the code from a file listing there; clone the
+repo.
+
+**Data** (not in git, genuinely only on Hugging Face / lab): the four
+checkpoints and `wetlab_tactile_norm_v2.json` (§4.2) at
+[`qqyang/zihiao_real_test/n0vtla_wetlab_posttrain/`](https://huggingface.co/datasets/qqyang/zihiao_real_test/tree/main/n0vtla_wetlab_posttrain)
+— `checkpoint_5000/10000/15000/20000/`, `wetlab_tactile_norm_v2.json`,
+`ship_gate_15000.json`, `ship_gate_20000.json`. Also present on lab under
+`/DATA2/qianqian/N0-VTLA/checkpoints/vtla_tactile_posttrain/wetlab_v2_train_full_run1/`
+and `/DATA2/qianqian/n0vtla_robot_audit/wetlab_tactile_norm_v2.json` if you're
+working from there directly instead.
+
+## 2. Starting the server
+
+```bash
+cd N0-VTLA
 python scripts/serve_policy.py \
   --policy.config=vtla_tactile_posttrain \
-  --policy.dir=checkpoints/vtla_tactile_posttrain/wetlab_v2_train_full_run1/20000
+  --policy.dir=<path to checkpoint_20000, from lab or downloaded from HF>
 ```
 
 This starts a websocket server (`n0vtla/serving/websocket_policy_server.py`,
 default port 8000) that loads the checkpoint once and serves inference
 requests. It reads `norm_stats.json` from the checkpoint's own
-`assets/wetlab_v2_train/` directory (not the repo's `assets/` dir), so the
-checkpoint directory must be complete (`model.safetensors`, `metadata.pt`,
-`assets/`) — all four checkpoints (5000/10000/15000/20000) and this repo's
-`norm_stats.json` are also mirrored on Hugging Face at
-`qqyang/zihiao_real_test/n0vtla_wetlab_posttrain/` if you're not working from
-the lab checkpoint directly.
+`assets/wetlab_v2_train/` directory (not the repo's `assets/` dir, and not
+`wetlab_tactile_norm_v2.json` — see §4.2 for why those are two different
+files), so the checkpoint directory must be complete (`model.safetensors`,
+`metadata.pt`, `assets/`).
 
 Run `python scripts/gate_c_check.py` first if you've changed anything about the
 model assembly or tactile path (DEPLOY.md) — a compatibility regression test
 against a known-good state.
 
-## 2. Client connection
+## 3. Client connection
 
 Use `n0vtla_client.websocket_client_policy.WebsocketClientPolicy`:
 
@@ -56,14 +86,14 @@ Use `n0vtla_client.websocket_client_policy.WebsocketClientPolicy`:
 from n0vtla_client.websocket_client_policy import WebsocketClientPolicy
 
 policy = WebsocketClientPolicy(host="<server-ip>", port=8000)
-policy.reset()              # call once per episode/rollout attempt -- see §4 (tactile baseline)
-result = policy.infer(obs)  # obs: dict, see §3. result: dict, see §4.
+policy.reset()              # call once per episode/rollout attempt -- see §4.2 (tactile baseline)
+result = policy.infer(obs)  # obs: dict, see §4. result: dict, see §5.
 ```
 
 `infer()` blocks on one round trip (msgpack over websocket) and returns the
 full response dict. There is no batching — one call per observation.
 
-## 3. Observation dict (what you send)
+## 4. Observation dict (what you send)
 
 Verified against `CanonicalTactileInputs.__call__`
 (`n0vtla/policies/canonical_tactile_policy.py:84-189`), the transform that
@@ -75,15 +105,15 @@ guaranteed by any other layer).
 
 | Key | Required | Shape / dtype | Notes |
 |---|---|---|---|
-| `observation.state` | **yes** (raises `ValueError` if absent) | `float32[32]` | See §3.1 for the layout. This is the **last commanded** arm+hand target, not measured proprioception — matches the training contract (`ROBOT_POSTTRAIN_OPEN_ISSUES.md` §6). |
+| `observation.state` | **yes** (raises `ValueError` if absent) | `float32[32]` | See §4.1 for the layout. This is the **last commanded** arm+hand target, not measured proprioception — matches the training contract (`ROBOT_POSTTRAIN_OPEN_ISSUES.md` §6). |
 | `observation.image.third_view` | recommended | `HWC uint8` RGB, any resolution | Static head camera. Resized to 224×224 internally (`ResizeImages`, `n0vtla/transforms.py:343`). Absent → zero placeholder, `image_mask` false for that view (the model was trained with this view always present for wetlab, so don't omit it in practice). |
 | `observation.image.right_wrist_view` | recommended | `HWC uint8` RGB, any resolution | Wrist (D405) camera. Same resize/placeholder behavior. |
 | `observation.image.left_wrist_view` | omit | — | This rig has no left arm; leave absent (the model was trained with this view masked absent for every wetlab episode — see `ROBOT_POSTTRAIN_OPEN_ISSUES.md` §3.1 for why the rig is right-only). |
-| `observation.image.right_wrist_right_tactile` | recommended | `float32[2,H,W,3]` or `uint8[2,H,W,3]` stack `[baseline, current]` (or a single `HWC` frame — see §3.2) | Tactile pressure heatmap, **not raw sensor data** — see §3.2 for the required encoding. |
+| `observation.image.right_wrist_right_tactile` | recommended | `float32[2,H,W,3]` or `uint8[2,H,W,3]` stack `[baseline, current]` (or a single `HWC` frame — see §4.2) | Tactile pressure heatmap, **not raw sensor data** — see §4.2 for the required encoding. |
 | `prompt` | optional | `str` | Defaults to `"Perform the task."` if omitted (`InjectDefaultPrompt`). Keep it fixed to this string — the checkpoint was trained on exactly this prompt for `cap_to_tray` (`ROBOT_POSTTRAIN_OPEN_ISSUES.md` §1.4/§6, HF dataset card §8). |
 | `action` / `actions` | **must be absent** | — | If present, `DeltaActions` (part of the same transform chain) will try to broadcast-subtract state against it and raise a shape error — it expects a full `(horizon, 32)` ground-truth chunk, which doesn't exist at inference time. Confirmed intentional: `canonical_tactile_policy.py:172-177`, "Actions are the training target and are absent at inference time." |
 
-### 3.1 `observation.state` layout (32-D)
+### 4.1 `observation.state` layout (32-D)
 
 Same layout as training (`ROBOT_POSTTRAIN_OPEN_ISSUES.md` §3.1,
 `right_eef_mm_columns6d_10_19_revo2_raw6_20_26_v1`):
@@ -108,7 +138,7 @@ round-trip output to your own inverse (see the postmortem in
 `ROBOT_POSTTRAIN_OPEN_ISSUES.md` §2's rot6d row about why a self-consistent
 round-trip test doesn't catch a systematic convention bug).
 
-### 3.2 Tactile encoding — this is not raw sensor data
+### 4.2 Tactile encoding — this is not raw sensor data
 
 The model was trained on a **grayscale pressure-heatmap image**, not raw taxel
 readings. Reproducing this at inference means, per taxel-pad reading:
@@ -168,7 +198,7 @@ keys and state layout don't apply here, but its control flow does). Read it
 before writing your own hardware-facing serve wrapper; don't reinvent the
 reset semantics from scratch.
 
-## 4. Response dict (what you get back)
+## 5. Response dict (what you get back)
 
 `Policy.infer()` (`n0vtla/policies/policy.py:68-106`) returns:
 
@@ -182,7 +212,7 @@ reset semantics from scratch.
 
 `actions` is already fully denormalized and delta-inverted (`Unnormalize` +
 `AbsoluteActions`, part of the policy's output transform chain) — decode it
-with the **same layout as §3.1** (`[10:13]`=xyz mm absolute, `[13:19]`=rot6d
+with the **same layout as §4.1** (`[10:13]`=xyz mm absolute, `[13:19]`=rot6d
 absolute, `[20:26]`=hand motor targets absolute 0-1000). Convert rot6d back to
 whatever your arm controller wants (axis-angle, quaternion, ...) with
 `n0vtla.policies.rotation_utils.rot6d_to_matrix`, the same function
@@ -197,7 +227,7 @@ receding-horizon replanning over blindly executing the entire chunk once you
 have a working loop; that's a deliberate real-time control decision for
 whoever integrates this, not something this contract prescribes either way.
 
-## 5. Before commanding the real arm — safety gates
+## 6. Before commanding the real arm — safety gates
 
 This document only specifies the *data contract*. It is not a green light to
 move the robot. `HUMAN_PRETRAIN_AND_ROBOT_POSTTRAIN.md`'s "Post-Training and
