@@ -571,7 +571,21 @@ reused as if it were a valid train-only result — it was never meant to be one.
     instruction) keeps this project's files namespaced away from those. Not yet
     added to the cross-project HF repo registry in `@TAMU` memory —
     worth doing so this doesn't get rediscovered by surprise again.
-16. **Next**: no further correctness work is blocking. Open, larger questions:
+16. ~~Document the real-robot inference interface.~~ DONE:
+    `docs/REAL_ROBOT_INFERENCE.md` — the exact observation/response dict
+    contract for `scripts/serve_policy.py`, verified against
+    `canonical_tactile_policy.py` rather than paraphrased (state layout,
+    image keys, the tactile episode-start-baseline mechanism, what must stay
+    absent from the observation dict and why). Uploaded alongside the
+    checkpoints to
+    [`qqyang/zihiao_real_test/n0vtla_wetlab_posttrain/inference/`](https://huggingface.co/datasets/qqyang/zihiao_real_test/tree/main/n0vtla_wetlab_posttrain/inference)
+    (the doc plus `serve_policy.py`, `serve_zmq.py`, `gate_c_check.py`, the
+    `n0vtla_client` package, `canonical_tactile_policy.py`, `rotation_utils.py`,
+    and the tactile-encoding scripts) so whoever wires up the real rig doesn't
+    need the full repo just to read the contract. This is a data-contract
+    document only — it does not implement any robot driver or safety layer,
+    and explicitly says so.
+17. **Next**: no further correctness work is blocking. Open, larger questions:
     whether to attempt a real-robot rollout at all given physical sync is
     permanently unverified (§3.3); if so, what supervised low-speed deployment
     gates to add first (§3's HUMAN_PRETRAIN_AND_ROBOT_POSTTRAIN.md "Post-Training
