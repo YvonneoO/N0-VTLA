@@ -107,6 +107,10 @@ def main() -> None:
     for episode_index, frame_index in pairs:
         global_index = int(offsets[episode_index]) + frame_index
         item = dataset[global_index]
+        # A live serving client never has future ground-truth actions to send; drop it here too
+        # so DeltaActions' "actions" not in data no-op path matches real inference exactly,
+        # instead of choking on a single-frame (no horizon axis) ground-truth action.
+        item.pop("action", None)
         out = policy.infer(item)
         actions = np.asarray(out["actions"])  # (horizon, action_dim), absolute physical units
         xyz = actions[:, XYZ_SLICE]
