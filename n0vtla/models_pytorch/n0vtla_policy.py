@@ -174,10 +174,10 @@ class N0VTLAConfig(Pi0Config):
             # in-place copy_() that requires the target to already be a real (non-meta) tensor.
             state_dict = _st.load_file(weight_path)
             missing, unexpected = model.load_state_dict(state_dict, strict=False, assign=True)
-            # Anything the checkpoint didn't cover is still on the meta device (no real data) --
-            # fail loudly rather than silently run inference with garbage/uninitialized weights.
-            leftover_meta = [n for n, p in model.named_parameters() if p.is_meta]
-            leftover_meta += [n for n, b in model.named_buffers() if b.is_meta]
+            leftover_meta = _repair_meta_leftovers_after_low_mem_load(model)
+            # Anything the checkpoint AND the repair pass above didn't cover is still on the meta
+            # device (no real data) -- fail loudly rather than silently run inference with
+            # garbage/uninitialized weights.
             if leftover_meta:
                 raise RuntimeError(
                     "N0VTLAConfig.low_cpu_mem_usage=True: checkpoint did not cover every "
@@ -203,6 +203,49 @@ class N0VTLAConfig(Pi0Config):
 # loaders run with strict=False, which would silently leave the renamed submodule randomly
 # initialized. Rewriting the keys as they come in keeps those checkpoints loadable.
 _LEGACY_KEY_PREFIXES = (("tactile_prior.", "tactile_predictor."),)
+
+
+def _repair_meta_leftovers_after_low_mem_load(model: "N0VTLAPolicy") -> list[str]:
+    """Fix up the handful of tensors a checkpoint never covers, after a meta+assign load.
+
+    ``load_state_dict(..., assign=True)`` only touches keys present in the checkpoint file, so
+    two categories of tensor are left stranded on the meta device (no real data) even on a
+    checkpoint that fully matches the model:
+
+      1. Non-persistent buffers (``register_buffer(..., persistent=False)``) -- e.g. each Gemma
+         attention block's RoPE ``inv_freq`` and SigLIP's vision-embedding ``position_ids``. These
+         are pure functions of config, are NEVER written to a state_dict (persistent=False), and
+         get computed at construction time -- which, under the meta context, computed a *meta*
+         result instead of a real one. Recomputed here for real (tiny; negligible memory).
+      2. Tied weights whose alias was dropped at save time. safetensors.torch.load_model's
+         strict=False path auto-resolves these via ``_remove_duplicate_names`` (it diffs
+         ``model.state_dict()`` for shared storage and skips the dropped alias, since copying into
+         the kept name already updates both -- they're the same tensor in a normally-constructed
+         model). ``assign=True`` breaks that aliasing (it replaces tensors wholesale rather than
+         copying in place), so PaliGemma's ``embed_tokens.weight`` -- tied to, and dropped from the
+         checkpoint in favor of, ``lm_head.weight`` -- needs to be re-pointed at it explicitly.
+
+    Returns the names of any parameter/buffer still on the meta device after these repairs (should
+    be empty for a checkpoint that otherwise fully matches the model).
+    """
+    for module in model.modules():
+        inv_freq = getattr(module, "inv_freq", None)
+        if isinstance(inv_freq, torch.Tensor) and inv_freq.is_meta:
+            real_inv_freq, _ = module.rope_init_fn(module.config, torch.device("cpu"))
+            module.inv_freq = real_inv_freq
+            module.original_inv_freq = real_inv_freq
+        position_ids = getattr(module, "position_ids", None)
+        if isinstance(position_ids, torch.Tensor) and position_ids.is_meta:
+            module.position_ids = torch.arange(module.num_positions).expand((1, -1))
+
+    paligemma = model.paligemma_with_expert.paligemma
+    lm_embed_tokens = paligemma.model.language_model.embed_tokens
+    if lm_embed_tokens.weight.is_meta and not paligemma.lm_head.weight.is_meta:
+        lm_embed_tokens.weight = paligemma.lm_head.weight
+
+    leftover = [n for n, p in model.named_parameters() if p.is_meta]
+    leftover += [n for n, b in model.named_buffers() if b.is_meta]
+    return leftover
 
 
 def _remap_legacy_predictor_keys(
