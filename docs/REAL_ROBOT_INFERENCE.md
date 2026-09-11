@@ -85,16 +85,76 @@ state, gradients, backward-pass activations); none of that exists at inference
 time.
 
 This number is **specific to this checkpoint's backbone**, not a general
-N0-VTLA constant: `model.safetensors` is 8.25 GB, matching the measured
-post-load allocation almost exactly, which confirms inference loads in bf16
-without upcasting (8.25 GB / 2 bytes-per-param ≈ 4.1B parameters — the `pi05`
-PaliGemma-based VLA backbone this config uses,
-`n0vtla/training/config.py:847-865`). A different backbone or a larger
-pretrained checkpoint would need correspondingly more VRAM; re-measure with
-the same method (`torch.cuda.max_memory_allocated`) rather than assuming this
-number carries over. Training used `VTLA_ATTN_IMPL=eager` (no flash-attention
-or other Hopper/Ampere-specific kernels), so inference has no unusual GPU
-compute-capability requirement beyond bf16 support.
+N0-VTLA constant, and the backbone is inherently large by design, not by
+implementation accident. Per the repo's own model summary (`README.md:51-56`):
+
+| Component | Choice |
+|---|---|
+| Backbone | PaliGemma (gemma_2b prefix) — a ~3B-parameter vision-language model (SigLIP vision encoder + Gemma-2B) |
+| Action expert | Gemma 300M — a separate, smaller transformer doing flow matching over the 50-step action chunk |
+| Tactile encoder | Frozen DINOv2 (`facebook/dinov2-base`) over baseline-difference images |
+| Tactile pathway | Cross-attention predictor → 5 latent tokens, injected into the action expert |
+| Precision | bf16 parameters, eager attention (matches the pretraining path) |
+
+`model.safetensors` is 8.25 GB, matching the measured post-load GPU allocation
+almost exactly (confirms inference loads in bf16 without upcasting): 8.25 GB /
+2 bytes-per-param ≈ 4.1B parameters, consistent with PaliGemma (~3B) + the
+300M action expert + DINOv2 (~86M, frozen) + the tactile
+predictor/projection modules. This is standard practice for this class of VLA
+foundation model (the `pi05`/Pi0.5 lineage this config name refers to,
+`n0vtla/training/config.py:847-865`) — the whole point is inheriting broad
+visual-language priors from internet-scale pretraining before task-specific
+post-training, not something this project's config chose to make larger than
+necessary. A different backbone or a larger pretrained checkpoint would need
+correspondingly more VRAM/RAM; re-measure with the same method rather than
+assuming this number carries over. Training used `VTLA_ATTN_IMPL=eager` (no
+flash-attention or other Hopper/Ampere-specific kernels), so inference has no
+unusual GPU compute-capability requirement beyond bf16 support.
+
+### 2.2 System RAM (host, not GPU) requirements — read this even if VRAM looks fine
+
+Measured 2026-09-10, same checkpoint, `resource.getrusage(...).ru_maxrss`
+(peak) and `psutil.Process().memory_info().rss` (current) around
+`create_trained_policy` — the exact call `serve_policy.py` makes once at
+startup:
+
+| Stage | Peak RSS (transient) | Current RSS (steady-state) |
+|---|---|---|
+| Immediately after `create_trained_policy` returns | **16.50 GB** | 3.82 GB |
+| 2s later, after `gc.collect()` | 16.50 GB (peak doesn't decrease) | 3.82 GB |
+
+**The host needs ~17 GB of free system RAM to survive loading the checkpoint,
+even though steady-state usage afterward is under 4 GB.** A machine sized only
+for steady-state operation (e.g. 8 GB free) will fail during the ~50s loading
+step, before the server ever starts accepting connections — this has nothing
+to do with the dataset, the rollout, or anything downstream of
+`create_trained_policy`; confirmed by instrumenting each stage separately
+(dataset construction, one item fetch, and `policy.infer()` added zero
+additional peak RSS beyond model loading).
+
+**Root cause**: `N0VTLAPolicy.load_pytorch`
+(`n0vtla/models_pytorch/n0vtla_policy.py:139-158`) constructs the full model
+in PyTorch's default dtype (fp32) on CPU first — 4.1B params × 4 bytes ≈
+16.4 GB, matching the measured peak — *then* loads the bf16 checkpoint into
+that fp32-shaped model, and only afterward does `create_trained_policy` cast
+it down to bf16 (`model.paligemma_with_expert.to_bfloat16_for_selected_params`).
+The fp32 copy is transient (freed once casting finishes, hence the drop to
+3.82 GB) but the host has to have enough RAM to hold it at the peak moment.
+
+**This is fixable but not yet fixed**: the standard pattern (used by
+`transformers`'s `low_cpu_mem_usage=True`, `accelerate`'s
+`init_empty_weights()`) is to construct the model on the `meta` device (no
+real allocation) and load the checkpoint's own-dtype (bf16) tensors directly
+via `load_state_dict(..., assign=True)`, skipping the fp32 intermediate
+entirely — this should bring the peak down close to the ~8-9 GB steady-state
+GPU figure. This would change `n0vtla/models_pytorch/n0vtla_policy.py`'s
+`load_pytorch`, which every config in this repo uses, not just
+`vtla_tactile_posttrain` — a change with real blast radius that needs its own
+numerical-equivalence verification before trusting it, not something to patch
+casually because one deployment machine is RAM-constrained. If your target
+machine can't clear ~17 GB free during startup, either add RAM/swap for the
+loading step only, or raise this as a real fix to `load_pytorch` rather than
+working around it per-deployment.
 
 ```bash
 cd N0-VTLA
