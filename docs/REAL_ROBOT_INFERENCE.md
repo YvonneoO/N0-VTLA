@@ -132,29 +132,63 @@ to do with the dataset, the rollout, or anything downstream of
 (dataset construction, one item fetch, and `policy.infer()` added zero
 additional peak RSS beyond model loading).
 
-**Root cause**: `N0VTLAPolicy.load_pytorch`
-(`n0vtla/models_pytorch/n0vtla_policy.py:139-158`) constructs the full model
-in PyTorch's default dtype (fp32) on CPU first — 4.1B params × 4 bytes ≈
-16.4 GB, matching the measured peak — *then* loads the bf16 checkpoint into
-that fp32-shaped model, and only afterward does `create_trained_policy` cast
-it down to bf16 (`model.paligemma_with_expert.to_bfloat16_for_selected_params`).
-The fp32 copy is transient (freed once casting finishes, hence the drop to
-3.82 GB) but the host has to have enough RAM to hold it at the peak moment.
+**Root cause**: `N0VTLAPolicy.__init__`
+(`n0vtla/models_pytorch/n0vtla_policy.py`) builds
+`PaliGemmaWithExpertModel` — the PaliGemma+action-expert backbone, the bulk of
+the 4.1B params — in PyTorch's default dtype (fp32) on CPU first (4.1B ×
+4 bytes ≈ 16.4 GB, matching the measured peak), then immediately casts it
+down to bf16 (`to_bfloat16_for_selected_params`, called from inside
+`PaliGemmaWithExpertModel.__init__` itself). `N0VTLAConfig.load_pytorch` then
+loads the checkpoint's own-dtype values into that already-mixed-dtype model
+via a plain `copy_()`-based `load_state_dict` (through
+`safetensors.torch.load_model`), which doesn't re-introduce an fp32 copy —
+the fp32 spike is entirely a **construction-time** cost (build-fp32-then-cast),
+not a checkpoint-loading one. The fp32 copy is transient (freed once casting
+finishes, hence the drop to 3.82 GB) but the host has to have enough RAM to
+hold it at the peak moment.
 
-**This is fixable but not yet fixed**: the standard pattern (used by
-`transformers`'s `low_cpu_mem_usage=True`, `accelerate`'s
-`init_empty_weights()`) is to construct the model on the `meta` device (no
-real allocation) and load the checkpoint's own-dtype (bf16) tensors directly
-via `load_state_dict(..., assign=True)`, skipping the fp32 intermediate
-entirely — this should bring the peak down close to the ~8-9 GB steady-state
-GPU figure. This would change `n0vtla/models_pytorch/n0vtla_policy.py`'s
-`load_pytorch`, which every config in this repo uses, not just
-`vtla_tactile_posttrain` — a change with real blast radius that needs its own
-numerical-equivalence verification before trusting it, not something to patch
-casually because one deployment machine is RAM-constrained. If your target
-machine can't clear ~17 GB free during startup, either add RAM/swap for the
-loading step only, or raise this as a real fix to `load_pytorch` rather than
-working around it per-deployment.
+**Fixed (opt-in): `N0VTLAConfig.low_cpu_mem_usage=True`.** Set this field
+(default `False`, off for every existing caller) to construct the backbone on
+`torch.device("meta")` instead (no real allocation) and load the checkpoint's
+tensors directly via `load_state_dict(..., assign=True)`, which assigns each
+meta parameter the checkpoint's own tensor (already in its final mixed
+fp32/bf16 dtype) instead of allocating-then-casting. The small
+`FrozenDINOv2TactileEncoder` submodule (uses `AutoModel.from_pretrained`,
+incompatible with a blanket meta context without `accelerate`) is left
+constructing normally — it's only ~344 MB, not the main cost. A handful of
+tensors are never in the checkpoint at all (non-persistent RoPE `inv_freq` /
+SigLIP `position_ids` buffers, computed from config at construction time; and
+PaliGemma's `embed_tokens.weight`, tied to and dropped from the checkpoint in
+favor of `lm_head.weight`) — `load_pytorch` repairs these explicitly after the
+assign-load and raises loudly if anything is still on the meta device
+afterward, rather than silently running with garbage weights.
+
+Measured 2026-09-10, same checkpoint, same machine:
+
+| | Peak RSS | Load time |
+|---|---|---|
+| `low_cpu_mem_usage=False` (default) | 16.59 GB | 48.3 s |
+| `low_cpu_mem_usage=True` | **9.59 GB** | **5.1 s** |
+
+Verified numerically identical to the default path: all 1077
+parameter/buffer tensors byte-for-byte equal, and `policy.infer()` on the same
+observation with the same injected noise produces bit-identical actions.
+
+To enable it, set the flag on the model config before calling
+`create_trained_policy` (it's a frozen dataclass, so use
+`dataclasses.replace`):
+
+```python
+import dataclasses
+train_config = dataclasses.replace(
+    train_config, model=dataclasses.replace(train_config.model, low_cpu_mem_usage=True)
+)
+```
+
+This landed on the `low-mem-inference-load` branch, not yet merged to `main`,
+and isn't wired into `serve_policy.py`'s CLI — flip it manually as above (or
+edit the checkpoint's config) if your target machine can't clear ~17 GB free
+at startup.
 
 ```bash
 cd N0-VTLA
