@@ -121,6 +121,21 @@ class N0VTLAConfig(Pi0Config):
     # scripts/verify_prefix_cache.py confirms cache-on == cache-off (bf16-noise level).
     use_prefix_cache: bool = False
 
+    # Inference-only memory optimization: construct the large PaliGemma+action-expert backbone
+    # (the `super().__init__(config)` call in N0VTLAPolicy.__init__) on torch.device("meta")
+    # instead of materializing it in PyTorch's default fp32 CPU dtype first. Weights are then
+    # ASSIGNED in directly from the checkpoint (N0VTLAConfig.load_pytorch: load_state_dict(...,
+    # assign=True)), which replaces each meta parameter with the checkpoint's own tensor (already
+    # in its final mixed fp32/bf16 dtype) instead of copy_()-ing checkpoint values into a
+    # pre-allocated fp32 tensor. Avoids ever materializing a full fp32 copy of the ~4.1B-param
+    # model, cutting the load-time system RAM peak roughly in half (measured baseline: ~16.5GB
+    # peak; see docs/REAL_ROBOT_INFERENCE.md §2.2). Submodules built AFTER `super().__init__`
+    # (e.g. FrozenDINOv2TactileEncoder, which uses AutoModel.from_pretrained and is incompatible
+    # with a blanket meta-device context without `accelerate`) are NOT affected -- they continue
+    # to construct normally (real CPU memory, ~344MB, not the main cost). OFF by default so
+    # training and every existing caller is unaffected; opt in for inference only.
+    low_cpu_mem_usage: bool = False
+
     # --- Stage-1 predictor-grounding pretraining (paper Sec 4.2; NOT part of the released repo,
     # see docs/STAGE1_PREDICTOR_PRETRAINING.md) ---
     # Gates construction of ``tactile_recon_head`` and enables ``forward_stage1``. Requires
@@ -150,7 +165,29 @@ class N0VTLAConfig(Pi0Config):
         import safetensors.torch as _st
 
         model = N0VTLAPolicy(config=train_config.model)
-        missing, unexpected = _st.load_model(model, weight_path, strict=False)
+
+        if bool(getattr(self, "low_cpu_mem_usage", False)):
+            # Model was constructed with its backbone on torch.device("meta") (see
+            # N0VTLAConfig.low_cpu_mem_usage / N0VTLAPolicy.__init__). assign=True REPLACES each
+            # meta parameter/buffer with the checkpoint's own tensor (no fp32 intermediate),
+            # rather than safetensors.torch.load_model's plain load_state_dict, which does an
+            # in-place copy_() that requires the target to already be a real (non-meta) tensor.
+            state_dict = _st.load_file(weight_path)
+            missing, unexpected = model.load_state_dict(state_dict, strict=False, assign=True)
+            # Anything the checkpoint didn't cover is still on the meta device (no real data) --
+            # fail loudly rather than silently run inference with garbage/uninitialized weights.
+            leftover_meta = [n for n, p in model.named_parameters() if p.is_meta]
+            leftover_meta += [n for n, b in model.named_buffers() if b.is_meta]
+            if leftover_meta:
+                raise RuntimeError(
+                    "N0VTLAConfig.low_cpu_mem_usage=True: checkpoint did not cover every "
+                    f"parameter/buffer -- {len(leftover_meta)} left on the meta device with no "
+                    f"real data: {leftover_meta[:10]}{'...' if len(leftover_meta) > 10 else ''}. "
+                    "Set low_cpu_mem_usage=False to use the normal (higher-peak-RAM) load path."
+                )
+        else:
+            missing, unexpected = _st.load_model(model, weight_path, strict=False)
+
         if missing or unexpected:
             import logging
 
@@ -186,7 +223,19 @@ class N0VTLAPolicy(PI0Pytorch):
     """
 
     def __init__(self, config) -> None:
-        super().__init__(config)
+        if bool(getattr(config, "low_cpu_mem_usage", False)):
+            # Meta-construct ONLY the large PaliGemma+action-expert backbone. PI0Pytorch.__init__
+            # builds everything from `config` alone -- no from_pretrained calls -- so it is safe
+            # under a blanket meta-device context with no `accelerate` dependency. Real weights
+            # are assigned in from the checkpoint afterward (N0VTLAConfig.load_pytorch,
+            # assign=True). Everything constructed below this point (tactile encoder/predictor,
+            # ...) is NOT wrapped -- FrozenDINOv2TactileEncoder uses AutoModel.from_pretrained,
+            # which is incompatible with a blanket meta context without `accelerate`, and it's
+            # small (~344MB) anyway, so it just constructs normally.
+            with torch.device("meta"):
+                super().__init__(config)
+        else:
+            super().__init__(config)
         self.tactile_predictor_enabled = bool(getattr(config, "tactile_predictor_enabled", False))
         # Phase-3 prefix-KV-cache optimization (see N0VTLAConfig.use_prefix_cache). Read as
         # an INSTANCE flag so a verify/bench harness can flip it at runtime on a fixed model.
