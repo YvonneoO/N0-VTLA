@@ -59,6 +59,43 @@ working from there directly instead.
 
 ## 2. Starting the server
 
+### 2.1 GPU / hardware requirements (measured, not estimated)
+
+Measured 2026-09-10 on `checkpoint_20000`, one H200, via `policy.infer()` calls
+identical to what `serve_policy.py` does per request (`torch.cuda.max_memory_allocated`/
+`max_memory_reserved`, `JAX_PLATFORMS=cpu` so JAX can't confound the reading —
+this repo's PyTorch models don't need JAX at inference time):
+
+| Stage | Allocated | Reserved |
+|---|---|---|
+| After loading the checkpoint | 8.27 GB | 8.34 GB |
+| After the first `infer()` call | 8.43 GB | 8.60 GB |
+| Steady-state (5 more calls, no growth) | 8.43 GB | 8.60 GB |
+
+Latency: first call 0.97 s (one-time warmup), steady-state **0.22 s/call**. One
+call returns the full 50-step chunk (1.67 s of robot motion at 30 Hz native
+rate), so inference latency is not the bottleneck for a real-time control loop.
+
+**Recommendation: one GPU with ≥16 GB VRAM** (e.g. RTX 4080/3090/A4000-class or
+better) — comfortably covers the measured ~8.6 GB with headroom for driver
+overhead and anything else running on the same box. **No multi-GPU needed for
+inference** — the 4×H200 DDP setup used for the 20,000-step *training* run
+(`ROBOT_POSTTRAIN_QUICKSTART.md`) is a training-only requirement (optimizer
+state, gradients, backward-pass activations); none of that exists at inference
+time.
+
+This number is **specific to this checkpoint's backbone**, not a general
+N0-VTLA constant: `model.safetensors` is 8.25 GB, matching the measured
+post-load allocation almost exactly, which confirms inference loads in bf16
+without upcasting (8.25 GB / 2 bytes-per-param ≈ 4.1B parameters — the `pi05`
+PaliGemma-based VLA backbone this config uses,
+`n0vtla/training/config.py:847-865`). A different backbone or a larger
+pretrained checkpoint would need correspondingly more VRAM; re-measure with
+the same method (`torch.cuda.max_memory_allocated`) rather than assuming this
+number carries over. Training used `VTLA_ATTN_IMPL=eager` (no flash-attention
+or other Hopper/Ampere-specific kernels), so inference has no unusual GPU
+compute-capability requirement beyond bf16 support.
+
 ```bash
 cd N0-VTLA
 python scripts/serve_policy.py \
