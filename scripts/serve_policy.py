@@ -1,5 +1,6 @@
 import dataclasses
 import logging
+import pathlib
 import socket
 
 import tyro
@@ -7,6 +8,7 @@ import tyro
 from n0vtla.policies import policy as _policy
 from n0vtla.policies import policy_config as _policy_config
 from n0vtla.serving import websocket_policy_server
+from n0vtla.training import checkpoints as _checkpoints
 from n0vtla.training import config as _config
 
 
@@ -36,11 +38,53 @@ class Args:
     # Record the policy's behavior for debugging.
     record: bool = False
 
+    # Inference-only memory optimization: construct the PyTorch model's backbone on the meta
+    # device and load checkpoint weights via assign=True instead of building a full fp32 CPU
+    # copy first. Cuts the load-time system RAM peak roughly in half (measured: ~16.6GB ->
+    # ~9.6GB) at no cost to correctness (see docs/REAL_ROBOT_INFERENCE.md §2.2). Off by default;
+    # only applies to N0VTLAConfig-based configs (e.g. vtla_tactile_posttrain) and is a no-op for
+    # the JAX loading path.
+    low_cpu_mem_usage: bool = False
+
 
 def create_policy(args: Args) -> _policy.Policy:
     """Create a policy from the given arguments."""
+    train_config = _config.get_config(args.policy.config)
+    if args.low_cpu_mem_usage:
+        if not hasattr(train_config.model, "low_cpu_mem_usage"):
+            raise ValueError(
+                "--low-cpu-mem-usage is only supported for N0VTLAConfig-based configs, but "
+                f"'{args.policy.config}' uses {type(train_config.model).__name__}."
+            )
+        train_config = dataclasses.replace(
+            train_config, model=dataclasses.replace(train_config.model, low_cpu_mem_usage=True)
+        )
+
+    # The config preset's own asset_id (used to locate norm_stats.json under the checkpoint's
+    # assets/ dir) is whatever the PRESET defaults to, not necessarily what a given training RUN
+    # actually used if it overrode asset_id at launch time (e.g. this repo's own
+    # wetlab_v2_train_full_run1 checkpoints were trained with asset_id="wetlab_v2_train", but
+    # every vtla_tactile_posttrain preset config defaults to "canonical_tactile_task" -- a mismatch
+    # that would otherwise 404 on a totally healthy checkpoint). If the preset's asset_id isn't
+    # present under this checkpoint but there's exactly one asset directory, that's unambiguously
+    # the checkpoint's own norm_stats -- use it instead of failing.
+    norm_stats = None
+    data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
+    assets_root = pathlib.Path(args.policy.dir) / "assets"
+    if data_config.asset_id and not (assets_root / data_config.asset_id).exists() and assets_root.is_dir():
+        candidates = [p.name for p in assets_root.iterdir() if p.is_dir()]
+        if len(candidates) == 1:
+            logging.info(
+                "Config asset_id '%s' not found under %s; falling back to this checkpoint's own "
+                "asset dir '%s'.",
+                data_config.asset_id,
+                assets_root,
+                candidates[0],
+            )
+            norm_stats = _checkpoints.load_norm_stats(assets_root, candidates[0])
+
     return _policy_config.create_trained_policy(
-        _config.get_config(args.policy.config), args.policy.dir, default_prompt=args.default_prompt
+        train_config, args.policy.dir, default_prompt=args.default_prompt, norm_stats=norm_stats
     )
 
 
