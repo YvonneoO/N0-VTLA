@@ -34,7 +34,7 @@ against, rather than requesting or assembling a partial copy:
 ```bash
 git clone https://github.com/YvonneoO/N0-VTLA
 cd N0-VTLA
-git checkout 4e60f0c2a08b20aefdf98ae7b3177c6469d8a6d6
+git checkout efc2169
 pip install -r requirements.txt   # or: see pyproject.toml
 ```
 
@@ -113,6 +113,11 @@ unusual GPU compute-capability requirement beyond bf16 support.
 
 ### 2.2 System RAM (host, not GPU) requirements — read this even if VRAM looks fine
 
+**TL;DR: pass `--low-cpu-mem-usage` to `serve_policy.py` (see below) unless
+your host has ~17 GB of free RAM to spare purely for the ~1-minute loading
+step.** The rest of this section explains the two numbers and why the gap
+between them exists.
+
 Measured 2026-09-10, same checkpoint, `resource.getrusage(...).ru_maxrss`
 (peak) and `psutil.Process().memory_info().rss` (current) around
 `create_trained_policy` — the exact call `serve_policy.py` makes once at
@@ -120,17 +125,20 @@ startup:
 
 | Stage | Peak RSS (transient) | Current RSS (steady-state) |
 |---|---|---|
-| Immediately after `create_trained_policy` returns | **16.50 GB** | 3.82 GB |
-| 2s later, after `gc.collect()` | 16.50 GB (peak doesn't decrease) | 3.82 GB |
+| Immediately after `create_trained_policy` returns (default, `low_cpu_mem_usage=False`) | 16.50-16.73 GB | 3.76-3.86 GB |
+| Immediately after `create_trained_policy` returns (`low_cpu_mem_usage=True`) | **9.59-9.65 GB** | **1.74-1.81 GB** |
+| 2s later, after `gc.collect()` (either mode) | peak doesn't decrease | same as above |
 
-**The host needs ~17 GB of free system RAM to survive loading the checkpoint,
-even though steady-state usage afterward is under 4 GB.** A machine sized only
-for steady-state operation (e.g. 8 GB free) will fail during the ~50s loading
-step, before the server ever starts accepting connections — this has nothing
-to do with the dataset, the rollout, or anything downstream of
-`create_trained_policy`; confirmed by instrumenting each stage separately
-(dataset construction, one item fetch, and `policy.infer()` added zero
-additional peak RSS beyond model loading).
+**Without `--low-cpu-mem-usage`, the host needs ~17 GB of free system RAM to
+survive loading the checkpoint, even though steady-state usage afterward is
+under 4 GB.** A machine sized only for steady-state operation (e.g. 8 GB free)
+will fail during the ~50s loading step, before the server ever starts
+accepting connections — this has nothing to do with the dataset, the
+rollout, or anything downstream of `create_trained_policy`; confirmed by
+instrumenting each stage separately (dataset construction, one item fetch,
+and `policy.infer()` added zero additional peak RSS beyond model loading).
+`--low-cpu-mem-usage` (below) fixes this: ~9.6 GB peak, ~1.8 GB steady-state,
+~5s load time, with no change to model behavior.
 
 **Root cause**: `N0VTLAPolicy.__init__`
 (`n0vtla/models_pytorch/n0vtla_policy.py`) builds
@@ -144,8 +152,11 @@ via a plain `copy_()`-based `load_state_dict` (through
 `safetensors.torch.load_model`), which doesn't re-introduce an fp32 copy —
 the fp32 spike is entirely a **construction-time** cost (build-fp32-then-cast),
 not a checkpoint-loading one. The fp32 copy is transient (freed once casting
-finishes, hence the drop to 3.82 GB) but the host has to have enough RAM to
-hold it at the peak moment.
+finishes, hence the drop to ~3.8 GB steady-state) but the host has to have
+enough RAM to hold it at the peak moment. `low_cpu_mem_usage=True` (below)
+avoids ever allocating this fp32 copy in the first place, which is also why
+its steady-state (~1.8 GB) ends up lower than the default path's, not just
+its peak — there's no fp32 allocator debt left behind to fragment the heap.
 
 **Fixed (opt-in): `N0VTLAConfig.low_cpu_mem_usage=True`.** Set this field
 (default `False`, off for every existing caller) to construct the backbone on
@@ -174,9 +185,25 @@ Verified numerically identical to the default path: all 1077
 parameter/buffer tensors byte-for-byte equal, and `policy.infer()` on the same
 observation with the same injected noise produces bit-identical actions.
 
-To enable it, set the flag on the model config before calling
-`create_trained_policy` (it's a frozen dataclass, so use
-`dataclasses.replace`):
+**On `main`, wired into `serve_policy.py`'s CLI** (merged 2026-09-10) — pass
+`--low-cpu-mem-usage` to use it:
+
+```bash
+cd N0-VTLA
+python scripts/serve_policy.py \
+  --policy.config=vtla_tactile_posttrain \
+  --policy.dir=<path to checkpoint_20000, from lab or downloaded from HF> \
+  --low-cpu-mem-usage
+```
+
+Omit the flag to keep the old (higher-peak-RAM) behavior — it defaults to
+`False`, so this is purely opt-in. It only applies to `N0VTLAConfig`-based
+configs (e.g. `vtla_tactile_posttrain`); passing it with a plain-`Pi0Config`
+config raises a clear error instead of silently doing nothing.
+
+To set it programmatically instead (e.g. in your own script calling
+`create_trained_policy` directly, not through `serve_policy.py`), it's a
+field on the frozen model-config dataclass:
 
 ```python
 import dataclasses
@@ -185,25 +212,27 @@ train_config = dataclasses.replace(
 )
 ```
 
-This landed on the `low-mem-inference-load` branch, not yet merged to `main`,
-and isn't wired into `serve_policy.py`'s CLI — flip it manually as above (or
-edit the checkpoint's config) if your target machine can't clear ~17 GB free
-at startup.
-
-```bash
-cd N0-VTLA
-python scripts/serve_policy.py \
-  --policy.config=vtla_tactile_posttrain \
-  --policy.dir=<path to checkpoint_20000, from lab or downloaded from HF>
-```
-
 This starts a websocket server (`n0vtla/serving/websocket_policy_server.py`,
 default port 8000) that loads the checkpoint once and serves inference
-requests. It reads `norm_stats.json` from the checkpoint's own
-`assets/wetlab_v2_train/` directory (not the repo's `assets/` dir, and not
-`wetlab_tactile_norm_v2.json` — see §4.2 for why those are two different
-files), so the checkpoint directory must be complete (`model.safetensors`,
-`metadata.pt`, `assets/`).
+requests. It reads `norm_stats.json` from the checkpoint's own `assets/`
+directory (not the repo's `assets/` dir, and not `wetlab_tactile_norm_v2.json`
+— see §4.2 for why those are two different files), so the checkpoint
+directory must be complete (`model.safetensors`, `metadata.pt`, `assets/`).
+
+**Asset-id fallback (fixed 2026-09-10):** the `vtla_tactile_posttrain` preset
+config's own default asset_id (`canonical_tactile_task`) does not match what
+this specific checkpoint's `assets/` directory actually contains
+(`wetlab_v2_train` — this run overrode `asset_id` at training-launch time, as
+individual runs sharing one preset config commonly do). Before the fix above,
+the exact command shown here would 404 on
+`assets/canonical_tactile_task/norm_stats.json` even though the checkpoint is
+completely healthy. `serve_policy.py`'s `create_policy` now falls back to the
+checkpoint's own asset directory whenever the preset's asset_id isn't present
+there and exactly one asset directory exists (this checkpoint's case) —
+logged at INFO level when it fires. If a checkpoint's `assets/` ever contains
+more than one directory, this fallback does nothing and you'll need to pass
+`norm_stats` explicitly by calling `create_trained_policy` yourself, since
+which one is correct becomes ambiguous.
 
 Run `python scripts/gate_c_check.py` first if you've changed anything about the
 model assembly or tactile path (DEPLOY.md) — a compatibility regression test
