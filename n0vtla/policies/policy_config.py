@@ -49,9 +49,23 @@ def create_trained_policy(
     weight_path = os.path.join(checkpoint_dir, "model.safetensors")
     is_pytorch = os.path.exists(weight_path)
 
+    # Determine the device to use for PyTorch models. Resolved BEFORE load_pytorch (rather than
+    # after, as this used to be ordered) so a low_cpu_mem_usage=True load can stream checkpoint
+    # tensors straight onto the target device -- see N0VTLAConfig.load_pytorch's `device` arg.
+    # Pure "pick a device string" logic with no side effects, so moving it earlier changes
+    # nothing for the normal (low_cpu_mem_usage=False) path, which still always gets an explicit
+    # `.to(pytorch_device)` from Policy.__init__ regardless of what device it loaded onto here.
+    if is_pytorch and pytorch_device is None:
+        try:
+            import torch
+
+            pytorch_device = "cuda" if torch.cuda.is_available() else "cpu"
+        except ImportError:
+            pytorch_device = "cpu"
+
     logging.info("Loading model...")
     if is_pytorch:
-        model = train_config.model.load_pytorch(train_config, weight_path)
+        model = train_config.model.load_pytorch(train_config, weight_path, device=pytorch_device)
         model.paligemma_with_expert.to_bfloat16_for_selected_params("bfloat16")
     else:
         model = train_config.model.load(_model.restore_params(checkpoint_dir / "params", dtype=jnp.bfloat16))
@@ -62,15 +76,6 @@ def create_trained_policy(
         if data_config.asset_id is None:
             raise ValueError("Asset id is required to load norm stats.")
         norm_stats = _checkpoints.load_norm_stats(checkpoint_dir / "assets", data_config.asset_id)
-
-    # Determine the device to use for PyTorch models
-    if is_pytorch and pytorch_device is None:
-        try:
-            import torch
-
-            pytorch_device = "cuda" if torch.cuda.is_available() else "cpu"
-        except ImportError:
-            pytorch_device = "cpu"
 
     return _policy.Policy(
         model,

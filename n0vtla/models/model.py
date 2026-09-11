@@ -283,7 +283,11 @@ class BaseModelConfig(abc.ABC):
         state.replace_by_pure_dict(params)
         return nnx.merge(graphdef, state)
 
-    def load_pytorch(self, train_config, weight_path: str):
+    def load_pytorch(self, train_config, weight_path: str, device=None):
+        # `device` is accepted (but unused here) purely so create_trained_policy can pass it
+        # uniformly to any config's load_pytorch -- see N0VTLAConfig.load_pytorch, whose
+        # low_cpu_mem_usage=True path streams checkpoint tensors straight onto it.
+        del device
         logger.info(f"train_config: {train_config}")
         model = pi0_pytorch.PI0Pytorch(config=train_config.model)
         missing, unexpected = safetensors.torch.load_model(model, weight_path, strict=False)
