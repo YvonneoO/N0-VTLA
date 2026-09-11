@@ -151,19 +151,12 @@ class N0VTLAConfig(Pi0Config):
     # logits (temperature=1); 0.07 is a deviation, not a paper-specified default.
     stage1_temperature: float = 0.07
 
-    def load_pytorch(self, train_config, weight_path: str, device: "str | torch.device | None" = None):
+    def load_pytorch(self, train_config, weight_path: str):
         """Serve/eval load path: build N0VTLAPolicy and load the trained weights.
 
         Overrides BaseModelConfig.load_pytorch so the predictor submodules are instantiated and
         populated on serve/eval (create_trained_policy does not run the train-script
         monkey-patch); see the comment below for why the base hardcoded-PI0Pytorch path fails.
-
-        ``device``: ONLY consulted by the low_cpu_mem_usage=True path, where checkpoint tensors
-        are streamed directly onto this device (skipping the host-RAM staging step that
-        Policy.__init__'s later ``.to(device)`` would otherwise require) -- see
-        N0VTLAConfig.low_cpu_mem_usage. Ignored (defaults to CPU) on the normal path, which is
-        unaffected either way since ``create_trained_policy`` always moves the model with its own
-        ``.to(pytorch_device)`` afterward regardless of what device it was loaded onto here.
         """
         # Base BaseModelConfig.load_pytorch (models/model.py:286) hardcodes PI0Pytorch, which
         # for a predictor checkpoint would silently leave the predictor submodules unloaded on the
@@ -179,13 +172,9 @@ class N0VTLAConfig(Pi0Config):
             # meta parameter/buffer with the checkpoint's own tensor (no fp32 intermediate),
             # rather than safetensors.torch.load_model's plain load_state_dict, which does an
             # in-place copy_() that requires the target to already be a real (non-meta) tensor.
-            # Loading straight onto `device` (when it's a GPU) additionally skips ever staging the
-            # full ~8GB checkpoint in host RAM at all -- that CPU dict was the dominant remaining
-            # term in the load-time RAM peak.
-            load_device = torch.device(device) if device is not None else torch.device("cpu")
-            state_dict = _st.load_file(weight_path, device=str(load_device))
+            state_dict = _st.load_file(weight_path)
             missing, unexpected = model.load_state_dict(state_dict, strict=False, assign=True)
-            leftover_meta = _repair_meta_leftovers_after_low_mem_load(model, device=load_device)
+            leftover_meta = _repair_meta_leftovers_after_low_mem_load(model)
             # Anything the checkpoint AND the repair pass above didn't cover is still on the meta
             # device (no real data) -- fail loudly rather than silently run inference with
             # garbage/uninitialized weights.
@@ -216,9 +205,7 @@ class N0VTLAConfig(Pi0Config):
 _LEGACY_KEY_PREFIXES = (("tactile_prior.", "tactile_predictor."),)
 
 
-def _repair_meta_leftovers_after_low_mem_load(
-    model: "N0VTLAPolicy", device: torch.device = torch.device("cpu")
-) -> list[str]:
+def _repair_meta_leftovers_after_low_mem_load(model: "N0VTLAPolicy") -> list[str]:
     """Fix up the handful of tensors a checkpoint never covers, after a meta+assign load.
 
     ``load_state_dict(..., assign=True)`` only touches keys present in the checkpoint file, so
@@ -244,12 +231,12 @@ def _repair_meta_leftovers_after_low_mem_load(
     for module in model.modules():
         inv_freq = getattr(module, "inv_freq", None)
         if isinstance(inv_freq, torch.Tensor) and inv_freq.is_meta:
-            real_inv_freq, _ = module.rope_init_fn(module.config, device)
+            real_inv_freq, _ = module.rope_init_fn(module.config, torch.device("cpu"))
             module.inv_freq = real_inv_freq
             module.original_inv_freq = real_inv_freq
         position_ids = getattr(module, "position_ids", None)
         if isinstance(position_ids, torch.Tensor) and position_ids.is_meta:
-            module.position_ids = torch.arange(module.num_positions, device=device).expand((1, -1))
+            module.position_ids = torch.arange(module.num_positions).expand((1, -1))
 
     paligemma = model.paligemma_with_expert.paligemma
     lm_embed_tokens = paligemma.model.language_model.embed_tokens
