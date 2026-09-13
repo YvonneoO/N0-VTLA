@@ -15,10 +15,14 @@
 # Submit with: sbatch scripts/vision_download_ckpt.sbatch  (run from the repo root)
 set -euo pipefail
 
+# env.sh internally runs its own `module load Miniforge3 ...`, which resets PATH and
+# knocks a conda env activation back off if sourced AFTER `conda activate` (confirmed
+# by job 534639's ModuleNotFoundError despite the dependency being freshly verified
+# present). Source env.sh FIRST so `conda activate` below is the last word on PATH.
+source /scratch/project/prj-02-phai-lab/yqq/env.sh
 module load Miniforge3
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate /scratch/project/prj-02-phai-lab/yqq/envs/n0vtla
-source /scratch/project/prj-02-phai-lab/yqq/env.sh
 
 hf download NeoteAI/n0-vtla-base --local-dir /scratch/project/prj-02-phai-lab/yqq/N0-VTLA/checkpoints/n0-vtla-base
 

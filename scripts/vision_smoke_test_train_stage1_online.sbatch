@@ -18,10 +18,16 @@
 # Submit with: sbatch scripts/vision_smoke_test_train_stage1_online.sbatch
 set -euo pipefail
 
+# env.sh internally runs its own `module load Miniforge3 ...`, which resets PATH and
+# knocks a conda env activation back off if sourced AFTER `conda activate` -- confirmed
+# by job 534639, which sourced env.sh last and failed with ModuleNotFoundError: No
+# module named 'jax' despite jax being freshly verified present in the n0vtla env
+# (job 534628). Source env.sh FIRST so `conda activate` below is the last word on PATH.
+source /scratch/project/prj-02-phai-lab/yqq/env.sh
 module load Miniforge3
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate /scratch/project/prj-02-phai-lab/yqq/envs/n0vtla
-source /scratch/project/prj-02-phai-lab/yqq/env.sh
+python -c "import jax, torch; print('env check OK: jax', jax.__version__, 'torch', torch.__version__)"
 
 export VTLA_ITW_RAW_ROOT=/scratch/project/prj-02-phai-lab/haohw/tacWAM/data/tujian_v5_recent
 export VTLA_ITW_DATES=itw08-10
