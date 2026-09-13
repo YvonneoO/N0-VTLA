@@ -53,6 +53,7 @@ from train_pytorch import (  # noqa: E402
     setup_ddp,
 )
 from train_stage1_predictor import (  # noqa: E402
+    STAGE1_TRAINABLE_PREFIXES,
     _Stage1Wrapper,
     load_stage1_checkpoint,
     load_stage1_policy_weights,
@@ -97,14 +98,16 @@ def train_loop_stage1_online(config: _config.TrainConfig) -> None:
     object.__setattr__(model_cfg, "dtype", config.pytorch_training_precision)
     if not model_cfg.tactile_predictor_enabled or model_cfg.tactile_mode != "latent":
         raise ValueError("Stage 1 requires the latent tactile predictor")
-    weights_file = None
-    if not config.resume:
-        if not config.pytorch_weight_path:
-            raise ValueError("Stage 1 requires a pretrained base policy checkpoint")
-        ckpt_path = Path(config.pytorch_weight_path)
-        weights_file = ckpt_path / "model.safetensors" if ckpt_path.is_dir() else ckpt_path
-        if not weights_file.is_file():
-            raise FileNotFoundError(f"Pretrained base policy checkpoint missing: {weights_file}")
+    # Needed on EVERY launch now, resume included: trainable-only checkpoints (see
+    # save_stage1_checkpoint in train_stage1_predictor.py) don't carry the frozen base,
+    # so it's always reloaded from here first, with a resumed run's own checkpoint
+    # applied on top afterward.
+    if not config.pytorch_weight_path:
+        raise ValueError("Stage 1 requires a pretrained base policy checkpoint")
+    ckpt_path = Path(config.pytorch_weight_path)
+    weights_file = ckpt_path / "model.safetensors" if ckpt_path.is_dir() else ckpt_path
+    if not weights_file.is_file():
+        raise FileNotFoundError(f"Pretrained base policy checkpoint missing: {weights_file}")
 
     resuming = False
     if config.resume:
@@ -171,16 +174,19 @@ def train_loop_stage1_online(config: _config.TrainConfig) -> None:
 
     policy = N0VTLAPolicy(model_cfg).to(device)
 
-    if not resuming:
-        missing, unexpected = load_stage1_policy_weights(policy, weights_file, device, strict=False)
-        allowed_missing = ("tactile_encoder.", "tactile_predictor.", "tactile_recon_head.", "z_proj.", "z_gate")
-        missing_base = [name for name in missing if not name.startswith(allowed_missing)]
-        if missing_base or unexpected:
-            raise ValueError(f"Incompatible pretrained checkpoint: missing_base={missing_base}, unexpected={unexpected}")
-        if is_main:
-            logging.info(f"Loaded pretrained weights from {weights_file}: missing={missing}")
+    # Warm-start from the released/adapted pretrained checkpoint ALWAYS, resume included
+    # (see train_stage1_predictor.py's train_loop_stage1 for the full rationale -- both
+    # scripts share the same trainable-only checkpoint format via save_stage1_checkpoint/
+    # load_stage1_checkpoint). A resumed run's own checkpoint is applied on top below.
+    missing, unexpected = load_stage1_policy_weights(policy, weights_file, device, strict=False)
+    allowed_missing = ("tactile_encoder.", "tactile_predictor.", "tactile_recon_head.", "z_proj.", "z_gate")
+    missing_base = [name for name in missing if not name.startswith(allowed_missing)]
+    if missing_base or unexpected:
+        raise ValueError(f"Incompatible pretrained checkpoint: missing_base={missing_base}, unexpected={unexpected}")
+    if is_main:
+        logging.info(f"Loaded pretrained base weights from {weights_file}: missing={missing}")
 
-    trainable_prefixes = ("tactile_encoder.tactile_proj.", "tactile_predictor.", "tactile_recon_head.")
+    trainable_prefixes = STAGE1_TRAINABLE_PREFIXES
     n_trainable, n_frozen = 0, 0
     for name, p in policy.named_parameters():
         if name.startswith(trainable_prefixes):

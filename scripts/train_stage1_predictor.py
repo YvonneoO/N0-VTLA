@@ -87,8 +87,26 @@ def load_stage1_policy_weights(policy, weights_file, device, *, strict):
     return safetensors.torch.load_model(policy, weights_file, strict=strict, device=str(device))
 
 
+# Must match train_loop_stage1's/train_loop_stage1_online's own freeze-selection exactly
+# (paper: "With the entire base policy frozen, we train only the predictor, the tactile
+# projection, and a lightweight reconstruction head") -- this is the ONLY thing a
+# trainable-only checkpoint saves, so a mismatch here would silently drop real state.
+STAGE1_TRAINABLE_PREFIXES = ("tactile_encoder.tactile_proj.", "tactile_predictor.", "tactile_recon_head.")
+
+
 def save_stage1_checkpoint(model, optimizer, global_step, config, is_main):
-    """Full policy checkpoint; global_step counts completed optimizer updates."""
+    """Trainable-only Stage-1 checkpoint (~123M params: tactile_encoder.tactile_proj +
+    tactile_predictor + tactile_recon_head), NOT a full policy snapshot.
+
+    The frozen ~3.7B-param base (PaliGemma VLM + Gemma action expert + z_gate) never
+    changes during Stage-1 and is always reloaded fresh from config.pytorch_weight_path
+    on every launch, resume included (see train_loop_stage1/train_loop_stage1_online),
+    so re-saving it into every checkpoint was pure waste: ~8.7GB/save previously, ~97%
+    of which was a byte-for-byte copy of the base checkpoint. This saves only the
+    trainable delta (~1-1.5GB including optimizer state) -- a resumed run reconstructs
+    the full model by loading the base checkpoint first, then this file on top (see
+    load_stage1_checkpoint). global_step counts completed optimizer updates.
+    """
     if not is_main:
         return
     should_save = (global_step % config.save_interval == 0 and global_step > 0) or (
@@ -103,20 +121,33 @@ def save_stage1_checkpoint(model, optimizer, global_step, config, is_main):
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
     raw_model = model.module.policy if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model.policy
-    safetensors.torch.save_model(raw_model, tmp_dir / "model.safetensors")
+    trainable_state = {
+        name: param.detach().to("cpu").contiguous()
+        for name, param in raw_model.named_parameters()
+        if name.startswith(STAGE1_TRAINABLE_PREFIXES)
+    }
+    safetensors.torch.save_file(trainable_state, tmp_dir / "model.safetensors")
     torch.save(optimizer.state_dict(), tmp_dir / "optimizer.pt")
     torch.save(
         {"global_step": global_step, "step_format": "completed_updates",
-         "config": dataclasses.asdict(config), "timestamp": time.time()},
+         "config": dataclasses.asdict(config), "timestamp": time.time(),
+         "checkpoint_format": "trainable_only_v1"},
         tmp_dir / "metadata.pt",
     )
     if final_dir.exists():
         shutil.rmtree(final_dir)
     tmp_dir.rename(final_dir)
-    logging.info(f"Saved stage-1 checkpoint at step {global_step} -> {final_dir}")
+    logging.info(f"Saved stage-1 checkpoint (trainable-only, {len(trainable_state)} tensors) at step {global_step} -> {final_dir}")
 
 
 def load_stage1_checkpoint(model, optimizer, checkpoint_dir, device):
+    """Loads the trainable-only delta (see save_stage1_checkpoint) ON TOP of whatever
+    base weights the caller already loaded into `model`. Unlike the old full-policy
+    checkpoint format, a trainable-only checkpoint alone cannot reconstruct the whole
+    model -- the caller MUST have already run load_stage1_policy_weights(base) before
+    calling this (both train_loop_stage1 and train_loop_stage1_online do this
+    unconditionally now, resume included, precisely so this ordering always holds).
+    """
     steps = [
         int(d.name) for d in checkpoint_dir.iterdir() if d.is_dir() and d.name.isdigit() and not d.name.startswith("tmp_")
     ]
@@ -125,7 +156,14 @@ def load_stage1_checkpoint(model, optimizer, checkpoint_dir, device):
     latest = max(steps)
     ckpt_dir = checkpoint_dir / f"{latest}"
     raw_model = model.module.policy if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model.policy
-    load_stage1_policy_weights(raw_model, ckpt_dir / "model.safetensors", device, strict=True)
+    missing, unexpected = safetensors.torch.load_model(
+        raw_model, ckpt_dir / "model.safetensors", strict=False, device=str(device)
+    )
+    if unexpected:
+        raise ValueError(f"Unexpected keys in trainable-only checkpoint {ckpt_dir}: {unexpected}")
+    missing_trainable = [name for name in missing if name.startswith(STAGE1_TRAINABLE_PREFIXES)]
+    if missing_trainable:
+        raise ValueError(f"Trainable-only checkpoint {ckpt_dir} is missing trainable params: {missing_trainable}")
     optimizer.load_state_dict(torch.load(ckpt_dir / "optimizer.pt", map_location=device, weights_only=False))
     metadata = torch.load(ckpt_dir / "metadata.pt", map_location=device, weights_only=False)
     step = metadata.get("global_step", latest)
@@ -146,14 +184,15 @@ def train_loop_stage1(config: _config.TrainConfig) -> None:
     object.__setattr__(model_cfg, "dtype", config.pytorch_training_precision)
     if not model_cfg.tactile_predictor_enabled or model_cfg.tactile_mode != "latent":
         raise ValueError("Stage 1 requires the latent tactile predictor")
-    weights_file = None
-    if not config.resume:
-        if not config.pytorch_weight_path:
-            raise ValueError("Stage 1 requires a pretrained base policy checkpoint")
-        ckpt_path = Path(config.pytorch_weight_path)
-        weights_file = ckpt_path / "model.safetensors" if ckpt_path.is_dir() else ckpt_path
-        if not weights_file.is_file():
-            raise FileNotFoundError(f"Pretrained base policy checkpoint missing: {weights_file}")
+    # Needed on EVERY launch now, resume included: trainable-only checkpoints (see
+    # save_stage1_checkpoint) don't carry the frozen base, so it's always reloaded from
+    # here first, with a resumed run's own checkpoint applied on top afterward.
+    if not config.pytorch_weight_path:
+        raise ValueError("Stage 1 requires a pretrained base policy checkpoint")
+    ckpt_path = Path(config.pytorch_weight_path)
+    weights_file = ckpt_path / "model.safetensors" if ckpt_path.is_dir() else ckpt_path
+    if not weights_file.is_file():
+        raise FileNotFoundError(f"Pretrained base policy checkpoint missing: {weights_file}")
 
     resuming = False
     if config.resume:
@@ -205,22 +244,23 @@ def train_loop_stage1(config: _config.TrainConfig) -> None:
 
     policy = N0VTLAPolicy(model_cfg).to(device)
 
-    # Warm-start from the released/adapted pretrained checkpoint (paper's own predictor weights
-    # if present; tactile_recon_head is our own new module and is NEVER in an upstream
-    # checkpoint, so it always comes up randomly initialized here -- expected, not an error).
-    if not resuming:
-        missing, unexpected = load_stage1_policy_weights(policy, weights_file, device, strict=False)
-        allowed_missing = ("tactile_encoder.", "tactile_predictor.", "tactile_recon_head.", "z_proj.", "z_gate")
-        missing_base = [name for name in missing if not name.startswith(allowed_missing)]
-        if missing_base or unexpected:
-            raise ValueError(f"Incompatible pretrained checkpoint: missing_base={missing_base}, unexpected={unexpected}")
-        if is_main:
-            logging.info(f"Loaded pretrained weights from {weights_file}: missing={missing}")
+    # Warm-start from the released/adapted pretrained checkpoint ALWAYS, resume included
+    # (paper's own predictor weights if present; tactile_recon_head is our own new module
+    # and is NEVER in an upstream checkpoint, so it always comes up randomly initialized
+    # here -- expected, not an error). A resumed run's own trainable-only checkpoint is
+    # applied ON TOP of this further down, overwriting just the trained submodules.
+    missing, unexpected = load_stage1_policy_weights(policy, weights_file, device, strict=False)
+    allowed_missing = ("tactile_encoder.", "tactile_predictor.", "tactile_recon_head.", "z_proj.", "z_gate")
+    missing_base = [name for name in missing if not name.startswith(allowed_missing)]
+    if missing_base or unexpected:
+        raise ValueError(f"Incompatible pretrained checkpoint: missing_base={missing_base}, unexpected={unexpected}")
+    if is_main:
+        logging.info(f"Loaded pretrained base weights from {weights_file}: missing={missing}")
 
     # Freeze everything except the three Stage-1-trainable submodules (paper: "With the entire
     # base policy frozen, we train only the predictor, the tactile projection, and a lightweight
     # reconstruction head").
-    trainable_prefixes = ("tactile_encoder.tactile_proj.", "tactile_predictor.", "tactile_recon_head.")
+    trainable_prefixes = STAGE1_TRAINABLE_PREFIXES
     n_trainable, n_frozen = 0, 0
     for name, p in policy.named_parameters():
         if name.startswith(trainable_prefixes):
