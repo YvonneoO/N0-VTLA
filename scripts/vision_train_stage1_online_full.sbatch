@@ -23,7 +23,9 @@
 # opportunities as the queue churns) and split into a --resume chain instead of one
 # long request, per user instruction, rather than holding out for one 24h slot.
 #
-# Chaining: NPROC_PER_NODE/EXP_NAME/RESUME are all overridable via --export=ALL,...
+# Chaining: NPROC_PER_NODE/EXP_NAME/RESUME/NUM_WORKERS/SAVE_INTERVAL are all
+# overridable via --export=ALL,... (pass --gres/--cpus-per-task/--mem/--time overrides
+# on the sbatch command line too, they take precedence over the #SBATCH lines above).
 #   First run:  sbatch --export=ALL,EXP_NAME=<name> scripts/vision_train_stage1_online_full.sbatch
 #   Next link:  sbatch --dependency=afterany:<prev_jobid> \
 #                 --export=ALL,EXP_NAME=<same name>,RESUME=1 \
@@ -58,6 +60,8 @@ export VTLA_PRETRAINED_CHECKPOINT=/scratch/project/prj-02-phai-lab/yqq/N0-VTLA/c
 
 EXP_NAME="${EXP_NAME:-online_full_${SLURM_JOB_ID}}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-4}"
+NUM_WORKERS="${NUM_WORKERS:-2}"
+SAVE_INTERVAL="${SAVE_INTERVAL:-2000}"
 RESUME_FLAG=()
 if [[ "${RESUME:-0}" == "1" ]]; then
   RESUME_FLAG=(--resume)
@@ -66,7 +70,8 @@ fi
 torchrun --standalone --nnodes=1 --nproc_per_node="$NPROC_PER_NODE" \
   scripts/train_stage1_online.py vtla_stage1_predictor_pretrain \
   --exp-name="$EXP_NAME" \
-  --num-workers=2 \
+  --num-workers="$NUM_WORKERS" \
+  --save-interval="$SAVE_INTERVAL" \
   --wandb-enabled \
   "${RESUME_FLAG[@]+"${RESUME_FLAG[@]}"}"
 
