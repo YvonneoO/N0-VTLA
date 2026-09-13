@@ -4,6 +4,7 @@
 #SBATCH --account=prj-02-phai-lab
 #SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=8
+#SBATCH --mem=400G
 #SBATCH --time=04:00:00
 #SBATCH --output=/scratch/project/prj-02-phai-lab/yqq/N0-VTLA/stage1_online_full_%j.log
 #
@@ -29,6 +30,16 @@
 #                 scripts/vision_train_stage1_online_full.sbatch
 # (checkpoints save every save_interval=2000 steps by TrainConfig default, so a link
 # that dies mid-way loses at most the steps since the last checkpoint, not the run.)
+#
+# 2026-09-13 postmortem: the first attempt (job 535274) was SLURM-OOM-killed ~47s in
+# ("Detected 1 oom_kill event in StepId=535274.batch"), well before step 1 or any
+# checkpoint -- no --mem was set, and the job's own 4 DDP ranks EACH independently
+# build the full ~32,000-episode corpus index in RAM (index_episodes has no rank-0-
+# builds-and-broadcasts sharing), so 4x the indexing memory hit whatever small default
+# the cgroup allocated for --cpus-per-task=8 (see @TAMU/CLAUDE.md's documented
+# vision-mem-coupled-to-cpu-oom pitfall -- same failure mode, worse here from the 4x
+# redundant indexing). Its --resume follow-up (535275) then failed instantly for the
+# obvious reason: no checkpoint existed yet to resume from. Fix: explicit --mem above.
 set -euo pipefail
 
 source /scratch/project/prj-02-phai-lab/yqq/env.sh
