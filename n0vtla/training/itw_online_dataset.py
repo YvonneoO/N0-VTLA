@@ -69,6 +69,34 @@ def read_task(ep_dir: Path) -> str:
     return str(info.get("name") or DEFAULT_TASK)
 
 
+def read_task_name_for_norm(ep_dir: Path) -> str | None:
+    """The task-identity key a per-task-scale normalization file's `task_scale` table
+    is keyed by -- DELIBERATELY the SAME field (`task_info.json["name"]`) tacWAM's own
+    code uses for this purpose (tacwam/tujian_v2.py:766, tacwam/cosmos_tactile/
+    pad_data.py:407: both `task.get("name", "")`), and DELIBERATELY DIFFERENT from
+    `read_task`'s "steps[0]" convention used for the language-instruction prompt.
+
+    Confirmed via a real tujian_v5_recent episode (VISION job 534565, 2026-09-13) that
+    these two fields genuinely differ in the same file: `name` is a short canonical
+    task label (e.g. "把水杯挪出备菜区", matching the per-task-scale table's key
+    style), `steps[0]` is a long multi-sentence instruction paragraph -- using
+    `read_task`'s value here would silently miss every table entry (long freeform
+    text never matches a canonical-name key) and fall back to `default_scale` for
+    every sample, quietly reproducing the crushed-signal problem per-task-scale
+    exists to fix, without ever raising an error.
+
+    Returns None (not "") when absent, so an empty-string task never accidentally
+    collides with an empty key in the table -- normalize_pressure's None handling
+    (see scripts/itw_pressure.py) then correctly falls back to `default_scale`.
+    """
+    path = ep_dir / "task_info.json"
+    if not path.exists():
+        return None
+    info = json.loads(path.read_text(encoding="utf-8"))
+    name = info.get("name")
+    return str(name) if name else None
+
+
 def letterbox_resize(img: np.ndarray, size: int = 224) -> np.ndarray:
     """Same aspect-preserving letterbox as scripts/itw_pressure.py::write_aligned_rgb,
     applied to a single already-decoded frame instead of a whole video."""
@@ -118,6 +146,26 @@ def index_episodes(episode_dirs: list[Path], *, min_frames: int = 51) -> list[tu
     return index
 
 
+def task_scale_coverage(episode_dirs: list[Path], normalization: dict) -> dict:
+    """Fraction of `episode_dirs` whose task name resolves to a real `task_scale` table
+    entry, vs. falling back to `default_scale`. Run this once against a sample of the
+    real corpus before trusting per-task-scale on a real training run: normalize_
+    pressure intentionally never raises on a name/table mismatch (matching tacWAM's
+    own scale_for), so a systematic wiring mistake (e.g. reading the wrong
+    task_info.json field) would otherwise silently degrade every sample to the
+    shared/global-scale behavior tacWAM's own audit already rejected, with no error
+    anywhere to catch it.
+
+    No-op (`match_rate=None`) for a non-per-task normalization file.
+    """
+    if "task_scale" not in normalization:
+        return {"matched": 0, "total": len(episode_dirs), "match_rate": None}
+    table = normalization["task_scale"]
+    total = len(episode_dirs)
+    matched = sum(1 for ep in episode_dirs if read_task_name_for_norm(ep) in table)
+    return {"matched": matched, "total": total, "match_rate": (matched / total) if total else None}
+
+
 class _EpisodeCache:
     """Alignment + tactile arrays + open video decoders for ONE episode.
 
@@ -139,8 +187,13 @@ class _EpisodeCache:
             return
         self.episode_dir = episode_dir
         self.mapping, _audit = aligned_timeline(episode_dir)
+        # Resolved once per episode (task identity is episode-level, not per-frame) --
+        # ignored by load_hand_pressure_arrays/normalize_pressure unless `normalization`
+        # is a per-task-scale file. See read_task_name_for_norm's docstring for why
+        # this is deliberately NOT the same field as the language-instruction prompt.
+        task_name = read_task_name_for_norm(episode_dir)
         self.pressure = {
-            hand: load_hand_pressure_arrays(episode_dir / npz_name, normalization, hand=hand)
+            hand: load_hand_pressure_arrays(episode_dir / npz_name, normalization, hand=hand, task_name=task_name)
             for hand, npz_name in (("left", "left_hand_data.npz"), ("right", "right_hand_data.npz"))
         }
         self.decoders = {}  # lazy: only open the views actually requested

@@ -9,7 +9,7 @@ from unittest import mock
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from itw_pressure import HANDS, PAD_IDS, SCHEMA  # noqa: E402
+from itw_pressure import HANDS, PAD_IDS, SCHEMA, SCHEMA_PER_TASK  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from n0vtla.training.itw_online_dataset import (  # noqa: E402
@@ -19,6 +19,8 @@ from n0vtla.training.itw_online_dataset import (  # noqa: E402
     letterbox_resize,
     list_episode_dirs,
     read_task,
+    read_task_name_for_norm,
+    task_scale_coverage,
 )
 
 
@@ -53,13 +55,36 @@ def _identity_normalization() -> dict:
     }
 
 
-def _build_episode(root: Path, *, n_frames: int = 120, task: str = "insert the plug") -> Path:
+def _per_task_normalization(*, task_scale: dict, default_scale: float = 1.0) -> dict:
+    return {
+        "schema": SCHEMA_PER_TASK,
+        "fit_split": "train",
+        "normal_baseline": [0.0] * 30,
+        "normal_scale": [default_scale] * 30,
+        "contact_threshold": [0.5] * 30,
+        "task_scale": task_scale,
+        "default_scale": default_scale,
+    }
+
+
+def _build_episode(
+    root: Path, *, n_frames: int = 120, task: str = "insert the plug", name: str | None = None
+) -> Path:
+    """`task` (-> task_info.json's "steps") is the language-instruction field read_task
+    reads; `name` (-> task_info.json's "name") is the SEPARATE canonical-task-id field
+    read_task_name_for_norm reads for per-task-scale lookup -- real tacWAM data has
+    both, and they differ (confirmed on real data, see read_task_name_for_norm's
+    docstring), so tests that care about the distinction pass both explicitly rather
+    than relying on one fixture value to stand in for both fields."""
     root.mkdir(parents=True, exist_ok=True)
     for view in ("rgb_head", "wrist_left", "wrist_right"):
         _write_camera_csv(root, view, n=n_frames)
     for hand in HANDS:
         _write_hand_npz(root, hand, n=n_frames)
-    (root / "task_info.json").write_text(json.dumps({"steps": [task]}))
+    info: dict = {"steps": [task]}
+    if name is not None:
+        info["name"] = name
+    (root / "task_info.json").write_text(json.dumps(info))
     return root
 
 
@@ -104,6 +129,24 @@ class ReadTaskAndResizeTests(unittest.TestCase):
             ep = Path(tmp) / "ep"
             ep.mkdir()
             self.assertEqual(read_task(ep), "Perform the task.")
+
+    def test_read_task_name_for_norm_uses_name_not_steps(self):
+        # The field split is real, not hypothetical: on actual tujian_v5_recent data
+        # "name" is a short canonical label and "steps[0]" a long instruction paragraph
+        # (VISION job 534565, 2026-09-13) -- read_task and read_task_name_for_norm must
+        # diverge here exactly the way they do on real data.
+        with tempfile.TemporaryDirectory() as tmp:
+            ep = _build_episode(Path(tmp) / "ep", task="a long freeform instruction", name="pour water")
+            self.assertEqual(read_task(ep), "a long freeform instruction")
+            self.assertEqual(read_task_name_for_norm(ep), "pour water")
+
+    def test_read_task_name_for_norm_none_when_absent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ep = _build_episode(Path(tmp) / "ep", task="close the drawer")  # no name=
+            self.assertIsNone(read_task_name_for_norm(ep))
+            missing = Path(tmp) / "no_task_info"
+            missing.mkdir()
+            self.assertIsNone(read_task_name_for_norm(missing))
 
     def test_letterbox_preserves_aspect_and_pads(self):
         img = np.full((100, 200, 3), 255, dtype=np.uint8)  # 2:1 landscape
@@ -183,6 +226,47 @@ class OnlineDatasetGetItemTests(unittest.TestCase):
             sample = ds[0]
         mask = sample["observation.image.left_wrist_left_tactile_is_pad"]
         self.assertEqual(mask.tolist(), [False, False, True])
+
+
+class PerTaskScaleIntegrationTests(unittest.TestCase):
+    """End-to-end: does a per-task-scale normalization file actually change the
+    rasterized tactile pixels, keyed by the episode's real task_info.json "name"
+    field (not read_task's "steps")? Exercises the full _EpisodeCache.load ->
+    load_hand_pressure_arrays -> normalize_pressure chain, not just normalize_pressure
+    in isolation."""
+
+    def test_getitem_uses_per_task_scale_from_episode_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ep = _build_episode(root / "ep0", n_frames=120, name="pour water")
+
+            def _sample_current_frame(task_scale: dict) -> np.ndarray:
+                norm_path = root / "norm.json"
+                norm_path.write_text(json.dumps(_per_task_normalization(task_scale=task_scale, default_scale=1.0)))
+                with mock.patch.object(_EpisodeCache, "rgb_frame", return_value=np.zeros((224, 224, 3), np.uint8)):
+                    ds = ITWOnlineTactileDataset([ep], norm_path, future_frame_offset=5)
+                    return ds[10]["observation.image.left_wrist_left_tactile"][1]  # current frame
+
+            # A huge scale for THIS episode's actual task ("pour water") vs. a huge
+            # scale for some other task (-> falls back to default_scale=1.0 for this
+            # episode) must rasterize differently -- proving the lookup used the real
+            # per-episode task name, not a hardcoded/default value regardless of input.
+            matched = _sample_current_frame({"pour water": 100.0})
+            unmatched = _sample_current_frame({"some other task": 100.0})
+            self.assertFalse((matched == unmatched).all())
+
+    def test_task_scale_coverage_matches_by_name_field(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            matched = _build_episode(root / "ep_matched", name="pour water")
+            unmatched = _build_episode(root / "ep_unmatched", name="some other task")
+            norm = _per_task_normalization(task_scale={"pour water": 2.0})
+            result = task_scale_coverage([matched, unmatched], norm)
+            self.assertEqual(result, {"matched": 1, "total": 2, "match_rate": 0.5})
+
+    def test_task_scale_coverage_is_noop_for_per_pad_normalization(self):
+        result = task_scale_coverage([Path("/nonexistent")], _identity_normalization())
+        self.assertIsNone(result["match_rate"])
 
 
 class ListEpisodeDirsTests(unittest.TestCase):

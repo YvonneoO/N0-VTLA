@@ -1,4 +1,5 @@
 import csv
+import json
 import sys
 import tempfile
 import unittest
@@ -7,7 +8,17 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from itw_pressure import HANDS, PAD_IDS, aligned_timeline, fit_normalization, normalize_pressure, pressure_rgb
+from itw_pressure import (
+    HANDS,
+    PAD_IDS,
+    SCHEMA,
+    SCHEMA_PER_TASK,
+    aligned_timeline,
+    fit_normalization,
+    load_normalization,
+    normalize_pressure,
+    pressure_rgb,
+)
 
 
 class PressureTests(unittest.TestCase):
@@ -37,6 +48,56 @@ class PressureTests(unittest.TestCase):
         np.testing.assert_array_equal(normalize_pressure(raw[:3], norm, "left", 0), [-1, 0, 1])
         with self.assertRaises(ValueError):
             normalize_pressure(np.array([np.nan]), norm, "left", 0)
+
+    def test_per_task_scale_overrides_per_pad_and_falls_back_to_default(self):
+        # Same baseline/index math as per-pad; only the SCALE source changes when a
+        # task_scale table is present -- and per tacWAM's own PadNormalization.scale_for,
+        # ALL pads use the one scale for the resolved task, not their individual
+        # normal_scale entries (which the manifest sets uniformly to default_scale
+        # anyway, purely for backward-compat with callers that never pass task_name).
+        norm = {
+            "normal_baseline": [0.] * 30,
+            "normal_scale": [999.] * 30,  # must be ignored once task_scale is present
+            "task_scale": {"pour water": 2.0},
+            "default_scale": 4.0,
+        }
+        raw = np.array([2.0], dtype=np.float32)
+        np.testing.assert_array_equal(normalize_pressure(raw, norm, "left", 0, task_name="pour water"), [1.0])
+        # Unknown task and no task_name at all both fall back to default_scale, matching
+        # tacWAM's own scale_for (it never raises on a missing/unmatched task_name).
+        np.testing.assert_array_equal(normalize_pressure(raw, norm, "left", 0, task_name="unseen task"), [0.5])
+        np.testing.assert_array_equal(normalize_pressure(raw, norm, "left", 0), [0.5])
+
+    def test_load_normalization_accepts_both_schemas(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            per_pad = Path(tmp) / "per_pad.json"
+            per_pad.write_text(json.dumps({
+                "schema": SCHEMA, "fit_split": "train",
+                "normal_baseline": [0.] * 30, "normal_scale": [1.] * 30,
+                "contact_threshold": [0.5] * 30,
+            }))
+            result = load_normalization(per_pad)
+            self.assertNotIn("task_scale", result)
+
+            per_task = Path(tmp) / "per_task.json"
+            per_task.write_text(json.dumps({
+                "schema": SCHEMA_PER_TASK, "fit_split": "train",
+                "normal_baseline": [0.] * 30, "normal_scale": [4.] * 30,
+                "contact_threshold": [0.5] * 30,
+                "task_scale": {"pour water": 2.0}, "default_scale": 4.0,
+            }))
+            result = load_normalization(per_task)
+            self.assertEqual(result["task_scale"], {"pour water": 2.0})
+
+            missing_table = Path(tmp) / "missing_table.json"
+            missing_table.write_text(json.dumps({
+                "schema": SCHEMA_PER_TASK, "fit_split": "train",
+                "normal_baseline": [0.] * 30, "normal_scale": [4.] * 30,
+                "contact_threshold": [0.5] * 30,
+                "task_scale": {}, "default_scale": 4.0,
+            }))
+            with self.assertRaisesRegex(ValueError, "non-empty task_scale"):
+                load_normalization(missing_table)
 
     def test_pressure_transport_has_no_shear_or_color(self):
         rgb = pressure_rgb(np.array([-1., 0., 8.]))

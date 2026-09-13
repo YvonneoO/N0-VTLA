@@ -20,11 +20,27 @@ PAD_IDS = (0, 1, 2, 3, 4, 5, 7, 8, 9, 11, 12, 13, 15, 16, 18)
 HANDS = ("left", "right")
 RGB_VIEWS = ("rgb_head", "wrist_left", "wrist_right")
 SCHEMA = "tacwam_v4_pad30_train_only_normalization"
+# Per-task force scale: same per-pad baseline, but scale is looked up by task name
+# instead of fit per-pad. tacWAM's own by-task audit (docs/v10/tactile_normalization_
+# ablation.md in the tacWAM repo) found per-pad scale distorts cross-pad relative
+# force for a diverse-task corpus (itw's, unlike single-task post-train data), and
+# that a single shared/global scale over-crushes light-touch tasks (ratio_to_global_
+# scale as low as 0.044 across 275 audited tasks) -- per-task scale is what they
+# adopted instead. Produced by tacWAM's scripts/cosmos3/build_per_task_tactile_
+# normalization.py; see tacwam/cosmos_tactile/pad_data.py::PadNormalization.scale_for
+# for the reference semantics this module's normalize_pressure mirrors.
+SCHEMA_PER_TASK = "tacwam_v10_pad30_train_only_per_task_scale_normalization"
 
 
 def load_normalization(path):
     result = json.loads(Path(path).read_text())
-    if result.get("schema") != SCHEMA or result.get("fit_split") != "train":
+    schema = result.get("schema")
+    if schema not in (SCHEMA, SCHEMA_PER_TASK):
+        raise ValueError(
+            f"Expected a tacWAM train-only pad30 normalization file "
+            f"(schema {SCHEMA!r} or {SCHEMA_PER_TASK!r}), got {schema!r}"
+        )
+    if result.get("fit_split") != "train":
         raise ValueError("Expected a tacWAM train-only pad30 normalization file")
     for key in ("normal_baseline", "normal_scale", "contact_threshold"):
         array = np.asarray(result[key], dtype=np.float64)
@@ -32,6 +48,16 @@ def load_normalization(path):
             raise ValueError(f"Invalid {key}: expected 30 finite numbers")
     if np.any(np.asarray(result["normal_scale"]) <= 0):
         raise ValueError("All scales must be positive")
+    if schema == SCHEMA_PER_TASK:
+        task_scale = result.get("task_scale")
+        if not isinstance(task_scale, dict) or not task_scale:
+            raise ValueError("Per-task-scale normalization file must have a non-empty task_scale table")
+        for name, scale in task_scale.items():
+            if not (isinstance(scale, (int, float)) and np.isfinite(scale) and scale > 0):
+                raise ValueError(f"Invalid task_scale for {name!r}: must be a positive finite number")
+        default_scale = result.get("default_scale")
+        if not (isinstance(default_scale, (int, float)) and np.isfinite(default_scale) and default_scale > 0):
+            raise ValueError("Per-task-scale normalization file must have a positive finite default_scale")
     return result
 
 
@@ -73,13 +99,29 @@ def fit_normalization(episodes, *, samples_per_recording=4, seed=42):
                 schema=SCHEMA, fit_split="train")
 
 
-def normalize_pressure(raw, norm, hand, pad):
+def normalize_pressure(raw, norm, hand, pad, *, task_name=None):
+    """`task_name` only matters for a SCHEMA_PER_TASK `norm` (ignored otherwise, so
+    every existing per-pad-scale caller is unaffected). When `norm` has a `task_scale`
+    table, ALL 30 pads share one scale for a given task (matching tacWAM's own
+    PadNormalization.scale_for: the whole point of per-task scale is that force
+    magnitude varies by TASK, not by pad, so per-pad indexing into task_scale would
+    defeat it). `task_name=None` (no task_info.json, or no "name" field) and an
+    explicit but unmatched name are treated identically -- both fall back to
+    `default_scale` -- mirroring tacWAM's own PadNormalization.scale_for exactly
+    (it never raises on a missing task_name either). This function does not try to
+    catch a caller that forgot to wire task_name at all; that's the training script's/
+    tests' job (e.g. asserting a healthy match rate against the task_scale table
+    before a real run), not something to guess at per-sample here.
+    """
     index = HANDS.index(hand) * 15 + PAD_IDS.index(int(pad))
     raw = np.asarray(raw, np.float32)
     if not np.isfinite(raw).all():
         raise ValueError(f"Nonfinite pressure: {hand}/pad{pad}; repair or exclude before conversion")
-    return np.clip((raw - norm["normal_baseline"][index]) /
-                   max(norm["normal_scale"][index], 1e-6), -1.0, 8.0)
+    if "task_scale" in norm:
+        scale = norm["task_scale"].get(task_name, norm["default_scale"]) if task_name is not None else norm["default_scale"]
+    else:
+        scale = norm["normal_scale"][index]
+    return np.clip((raw - norm["normal_baseline"][index]) / max(scale, 1e-6), -1.0, 8.0)
 
 
 def pressure_rgb(normal):
@@ -171,16 +213,20 @@ def write_aligned_rgb(source, destination, indices):
     return Path(destination).stat().st_size
 
 
-def load_hand_pressure_arrays(npz_path, norm, *, hand):
+def load_hand_pressure_arrays(npz_path, norm, *, hand, task_name=None):
     """Per-pad normalized pressure for one hand, for the WHOLE episode (all frames).
 
     Shared by the offline video writer and the online dataset (n0vtla/training/
     itw_online_dataset.py) so both rasterize from the exact same normalized values --
     there is no separate "online" normalization path to drift out of sync with the
-    fixed train-only statistics.
+    fixed train-only statistics. `task_name` is forwarded to normalize_pressure (only
+    used when `norm` is a per-task-scale file; see its docstring).
     """
     with np.load(npz_path, allow_pickle=False) as z:
-        return {str(p): normalize_pressure(z[f"tactile_{p}"], norm, hand, p) for p in PAD_IDS}
+        return {
+            str(p): normalize_pressure(z[f"tactile_{p}"], norm, hand, p, task_name=task_name)
+            for p in PAD_IDS
+        }
 
 
 def rasterize_pressure_frame(arrays, index, *, hand, layout="hand"):
@@ -209,8 +255,8 @@ def rasterize_pressure_frame(arrays, index, *, hand, layout="hand"):
     return canvas
 
 
-def write_pressure_video(npz_path, destination, indices, norm, *, hand, layout="hand"):
-    arrays = load_hand_pressure_arrays(npz_path, norm, hand=hand)
+def write_pressure_video(npz_path, destination, indices, norm, *, hand, layout="hand", task_name=None):
+    arrays = load_hand_pressure_arrays(npz_path, norm, hand=hand, task_name=task_name)
     with video_writer(destination) as writer:
         for index in indices:
             writer.append_data(rasterize_pressure_frame(arrays, index, hand=hand, layout=layout))
