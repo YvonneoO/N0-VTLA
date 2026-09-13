@@ -27,5 +27,10 @@ conda activate /scratch/project/prj-02-phai-lab/yqq/envs/n0vtla
 RAW_ROOT=/scratch/project/prj-02-phai-lab/haohw/tacWAM/data/tujian_v5_recent
 NORM=/scratch/project/prj-02-phai-lab/haohw/tacWAM/docs/v10/per_task_scale_normalization/normalization_v10_pad30_per_task_scale.json
 
+# ${SMOKE_DATE:-itw07-23}: overridable via --export=ALL,SMOKE_DATE=itw08-10 so the same
+# job definition can re-check coverage on a date inside the per-task-scale table's own
+# fit range (docs/v10/manifests/recording_roots_v7_post0802.json covers itw08-03..
+# itw08-31 only -- itw07-23 legitimately has 0% task_scale coverage because it's simply
+# outside that range, not a code bug; confirmed via job 534584).
 python scripts/smoke_test_online_loader.py "$RAW_ROOT" "$NORM" \
-  --dates itw07-23 --max-episodes 15 --samples-per-episode 3
+  --dates "${SMOKE_DATE:-itw07-23}" --max-episodes 15 --samples-per-episode 3
