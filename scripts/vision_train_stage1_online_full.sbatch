@@ -2,25 +2,33 @@
 #SBATCH --job-name=n0vtla-stage1-online-full
 #SBATCH --partition=def
 #SBATCH --account=prj-02-phai-lab
-#SBATCH --gres=gpu:8
-#SBATCH --cpus-per-task=16
-#SBATCH --time=24:00:00
+#SBATCH --gres=gpu:4
+#SBATCH --cpus-per-task=8
+#SBATCH --time=04:00:00
 #SBATCH --output=/scratch/project/prj-02-phai-lab/yqq/N0-VTLA/stage1_online_full_%j.log
 #
 # Formal (not exploratory) online Stage-1 training run: full itw07-23..itw09-10
 # corpus (no date/episode cap), real batch_size=64 and num_train_steps=20_000 (the
 # vtla_stage1_predictor_pretrain TrainConfig's own defaults -- neither overridden
-# here), the new full-corpus per-task-scale table, single node 8-GPU DDP (one full
-# VISION node -- avoids the added complexity/risk of an untested multi-node rendezvous
-# for this first formal launch). Gated on job 535038 (single-GPU, itw08-10-only,
-# real-batch-size convergence check) showing a clean decreasing nce trend with no
-# instability through step 150.
+# here), the new full-corpus per-task-scale table, single-node DDP. Gated on job
+# 535038 (single-GPU, itw08-10-only, real-batch-size convergence check) showing a
+# clean decreasing nce trend with no instability through step 150.
 #
-# Resumable: if walltime runs out before step 20000, resubmit with
-# --export=ALL,EXP_NAME=<this job's exp name> and add --resume to the python call
-# below (checkpoints save every save_interval=2000 steps by TrainConfig default).
+# 2026-09-13: `sbatch --test-only` showed the SAME ~2026-09-14T18:2x estimated start
+# regardless of GPU count (1/2/4/8) or walltime (4h/24h) -- this account's queue is
+# priority/fairshare-bound right now (a 4-node job + several pending jobs ahead), not
+# resource-fit-bound, so shrinking the request doesn't change the current snapshot
+# estimate. Still shrunk to 4 GPUs + 4h (smaller fairshare footprint, more backfill
+# opportunities as the queue churns) and split into a --resume chain instead of one
+# long request, per user instruction, rather than holding out for one 24h slot.
 #
-# Submit with: sbatch scripts/vision_train_stage1_online_full.sbatch
+# Chaining: NPROC_PER_NODE/EXP_NAME/RESUME are all overridable via --export=ALL,...
+#   First run:  sbatch --export=ALL,EXP_NAME=<name> scripts/vision_train_stage1_online_full.sbatch
+#   Next link:  sbatch --dependency=afterany:<prev_jobid> \
+#                 --export=ALL,EXP_NAME=<same name>,RESUME=1 \
+#                 scripts/vision_train_stage1_online_full.sbatch
+# (checkpoints save every save_interval=2000 steps by TrainConfig default, so a link
+# that dies mid-way loses at most the steps since the last checkpoint, not the run.)
 set -euo pipefail
 
 source /scratch/project/prj-02-phai-lab/yqq/env.sh
@@ -38,10 +46,17 @@ export VTLA_ITW_NORMALIZATION=/scratch/project/prj-02-phai-lab/haohw/tacWAM/docs
 export VTLA_PRETRAINED_CHECKPOINT=/scratch/project/prj-02-phai-lab/yqq/N0-VTLA/checkpoints/n0-vtla-base
 
 EXP_NAME="${EXP_NAME:-online_full_${SLURM_JOB_ID}}"
-torchrun --standalone --nnodes=1 --nproc_per_node=8 \
+NPROC_PER_NODE="${NPROC_PER_NODE:-4}"
+RESUME_FLAG=()
+if [[ "${RESUME:-0}" == "1" ]]; then
+  RESUME_FLAG=(--resume)
+fi
+
+torchrun --standalone --nnodes=1 --nproc_per_node="$NPROC_PER_NODE" \
   scripts/train_stage1_online.py vtla_stage1_predictor_pretrain \
   --exp-name="$EXP_NAME" \
   --num-workers=2 \
-  --wandb-enabled
+  --wandb-enabled \
+  "${RESUME_FLAG[@]+"${RESUME_FLAG[@]}"}"
 
 echo VISION_STAGE1_ONLINE_FULL_LAUNCHED
