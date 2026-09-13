@@ -171,27 +171,49 @@ def write_aligned_rgb(source, destination, indices):
     return Path(destination).stat().st_size
 
 
-def write_pressure_video(npz_path, destination, indices, norm, *, hand, layout="hand"):
+def load_hand_pressure_arrays(npz_path, norm, *, hand):
+    """Per-pad normalized pressure for one hand, for the WHOLE episode (all frames).
+
+    Shared by the offline video writer and the online dataset (n0vtla/training/
+    itw_online_dataset.py) so both rasterize from the exact same normalized values --
+    there is no separate "online" normalization path to drift out of sync with the
+    fixed train-only statistics.
+    """
+    with np.load(npz_path, allow_pickle=False) as z:
+        return {str(p): normalize_pressure(z[f"tactile_{p}"], norm, hand, p) for p in PAD_IDS}
+
+
+def rasterize_pressure_frame(arrays, index, *, hand, layout="hand"):
+    """One 224x224 hand-pressure canvas at `index` into per-pad normalized arrays.
+
+    `arrays` is `load_hand_pressure_arrays`'s return value (or an equivalent dict of
+    pad-id -> normalized-pressure-over-time array). Pulled out of `write_pressure_video`
+    so the online dataset renders pixel-identical frames without going through a video
+    file at all.
+    """
     from itw_tactile_smoke_adapter import TACTILE_SLOT_LAYOUT, _mirror_box, _put_resized
 
-    with np.load(npz_path, allow_pickle=False) as z:
-        arrays = {str(p): normalize_pressure(z[f"tactile_{p}"], norm, hand, p) for p in PAD_IDS}
+    canvas = np.zeros((224, 224, 3), np.uint8)
+    for j, (pad, array) in enumerate(arrays.items()):
+        rgb = pressure_rgb(array[index])
+        if layout == "hand":
+            box = TACTILE_SLOT_LAYOUT[pad]
+            if hand == "left":
+                box = _mirror_box(box)
+            if pad == "18":
+                rgb = np.rot90(rgb)
+        else:
+            row, col = divmod(j, 4)
+            box = ((col + .5) / 4, (row + .5) / 4, .25, .25)
+        _put_resized(canvas, rgb, box)
+    return canvas
+
+
+def write_pressure_video(npz_path, destination, indices, norm, *, hand, layout="hand"):
+    arrays = load_hand_pressure_arrays(npz_path, norm, hand=hand)
     with video_writer(destination) as writer:
         for index in indices:
-            canvas = np.zeros((224, 224, 3), np.uint8)
-            for j, (pad, array) in enumerate(arrays.items()):
-                rgb = pressure_rgb(array[index])
-                if layout == "hand":
-                    box = TACTILE_SLOT_LAYOUT[pad]
-                    if hand == "left":
-                        box = _mirror_box(box)
-                    if pad == "18":
-                        rgb = np.rot90(rgb)
-                else:
-                    row, col = divmod(j, 4)
-                    box = ((col + .5) / 4, (row + .5) / 4, .25, .25)
-                _put_resized(canvas, rgb, box)
-            writer.append_data(canvas)
+            writer.append_data(rasterize_pressure_frame(arrays, index, hand=hand, layout=layout))
     return Path(destination).stat().st_size
 
 
