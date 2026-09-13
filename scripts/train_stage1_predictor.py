@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Stage-1 predictor-grounding pretraining (paper arXiv:2607.23782 Sec 4.2) -- ACTION-FREE.
 
-NOT part of the released N0-VTLA repo (see docs/STAGE1_PREDICTOR_PRETRAINING.md for the audit
+NOT part of the released N0-VTLA repo (see docs/PRETRAIN_IMPLEMENTATION.md for the audit
 that established this and the full design writeup). This script trains ONLY
 ``tactile_encoder.tactile_proj`` + ``tactile_predictor`` + ``tactile_recon_head`` against the
 paper's L_1 = L_NCE + lambda_rec * L_rec objective (N0VTLAPolicy.forward_stage1); the rest of
@@ -18,7 +18,7 @@ Usage (single node):
 Relies on the SAME env vars as train.sh's post-training path (VTLA_DATASET_PATH,
 VTLA_PRETRAINED_CHECKPOINT, VTLA_ASSET_ID, ...) plus VTLA_STAGE1_* knobs -- see the
 ``vtla_stage1_predictor_pretrain`` TrainConfig in n0vtla/training/config.py and
-docs/STAGE1_PREDICTOR_PRETRAINING.md.
+docs/PRETRAIN_IMPLEMENTATION.md.
 """
 from __future__ import annotations
 

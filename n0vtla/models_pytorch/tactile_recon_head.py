@@ -5,7 +5,7 @@ predictor-grounding objective (arXiv:2607.23782 Sec 4.2, Eq. 5):
 
 This head and the Stage-1 training loop that uses it are NOT part of the open-sourced N0-VTLA
 repo (the release ships only the action-conditioned post-training path; see
-docs/STAGE1_PREDICTOR_PRETRAINING.md for the audit that established this). This module is our
+docs/PRETRAIN_IMPLEMENTATION.md for the audit that established this). This module is our
 own implementation of the paper's Sec 4.2 recipe, written to fill that gap so we can pretrain
 the tactile predictor on data with no ground-truth robot actions (e.g. itw hand/glove tactile).
 

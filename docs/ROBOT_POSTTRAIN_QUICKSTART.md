@@ -227,5 +227,5 @@ and tactile parameter updates. This is pipeline validation, not policy success.
   action decoding, controller integration, safety limits, and supervised trials.
 
 See [the detailed smoke report](WETLAB_POSTTRAIN_SMOKE.md) for conversion commands,
-audit results, and diagnostics; [the study overview](HUMAN_PRETRAIN_AND_ROBOT_POSTTRAIN.md)
+audit results, and diagnostics; [the study overview](PRETRAIN_IMPLEMENTATION.md)
 separates the human-pretraining study from the official-base robot experiment.

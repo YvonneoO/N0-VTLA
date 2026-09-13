@@ -382,7 +382,7 @@ conversion.
 **Execute the full 50-step chunk before requesting the next prediction**
 (DEPLOY.md) unless you deliberately implement receding-horizon replanning —
 the model wasn't trained with a different replanning cadence in mind, and
-`HUMAN_PRETRAIN_AND_ROBOT_POSTTRAIN.md`'s deployment gates explicitly recommend
+`PRETRAIN_IMPLEMENTATION.md`'s deployment gates explicitly recommend
 receding-horizon replanning over blindly executing the entire chunk once you
 have a working loop; that's a deliberate real-time control decision for
 whoever integrates this, not something this contract prescribes either way.
@@ -390,7 +390,7 @@ whoever integrates this, not something this contract prescribes either way.
 ## 6. Before commanding the real arm — safety gates
 
 This document only specifies the *data contract*. It is not a green light to
-move the robot. `HUMAN_PRETRAIN_AND_ROBOT_POSTTRAIN.md`'s "Post-Training and
+move the robot. `PRETRAIN_IMPLEMENTATION.md`'s "Post-Training and
 Deployment Gates" section (written before this training run existed, still
 applicable) lists the pre-motion checklist: physical-unit held-out action
 error, smoothness/command-limit checks, causal sensor latency, source-action
@@ -413,4 +413,4 @@ operates the real xArm6 + Revo2.
 | rot6d conversion utilities | `n0vtla.policies.rotation_utils` |
 | Tactile normalization/encoding | `scripts/itw_pressure.py` (`normalize_pressure`, `pressure_rgb`), `scripts/itw_tactile_smoke_adapter.py` (`TACTILE_SLOT_LAYOUT`, `_put_resized`) |
 | This checkpoint's provenance, training config, ship-gate results | `ROBOT_POSTTRAIN_QUICKSTART.md`, `ROBOT_POSTTRAIN_OPEN_ISSUES.md` |
-| Pre-motion safety gates | `HUMAN_PRETRAIN_AND_ROBOT_POSTTRAIN.md`, "Post-Training and Deployment Gates" |
+| Pre-motion safety gates | `PRETRAIN_IMPLEMENTATION.md`, "Post-Training and Deployment Gates" |

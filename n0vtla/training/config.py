@@ -473,7 +473,7 @@ class LeRobotCanonicalTaskTactileDataConfig(DataConfigFactory):
     action_sequence_keys: Sequence[str] = ("action",)
     # >0: also load tac_{t+offset} as the Stage-1 z*/Dbar target frame (paper Sec 4.2; see
     # n0vtla_policy.py::N0VTLAPolicy._build_future_target and
-    # docs/STAGE1_PREDICTOR_PRETRAINING.md). 0 (default) -> 2-frame [baseline, current] stack,
+    # docs/PRETRAIN_IMPLEMENTATION.md). 0 (default) -> 2-frame [baseline, current] stack,
     # byte-identical to before this field existed. Set to the action horizon H (50) to match the
     # paper's target definition.
     future_frame_offset: int = 0
@@ -894,7 +894,7 @@ _CONFIGS = [
     # Stage-1 predictor-grounding pretraining (paper Sec 4.2) -- action-FREE: trains only
     # tactile_encoder.tactile_proj + tactile_predictor + tactile_recon_head against an InfoNCE +
     # L1-recon future-tactile target, never touches ground-truth actions. Not part of the
-    # released repo; see docs/STAGE1_PREDICTOR_PRETRAINING.md for the full design writeup and
+    # released repo; see docs/PRETRAIN_IMPLEMENTATION.md for the full design writeup and
     # scripts/train_stage1_predictor.py for the (separate, action-free) training loop that
     # consumes this config. action_dim/action_horizon are inherited from Pi0Config only because
     # N0VTLAPolicy subclasses PI0Pytorch; the Stage-1 loss never constructs the action suffix.

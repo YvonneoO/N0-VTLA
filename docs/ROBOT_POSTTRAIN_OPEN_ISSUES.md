@@ -78,7 +78,7 @@ N0-VTLA's one-episode audit read only `right_hand_data.npz` and reported it as t
 "real right glove pressure" (`WETLAB_POSTTRAIN_SMOKE.md`), with values that are
 consistent with tacWAM's dead-channel numbers rather than contradicting them:
 largest raw value **0.000878119**, only 5 of 15 pads nonzero
-(`HUMAN_PRETRAIN_AND_ROBOT_POSTTRAIN.md`, "One-Episode Audit" section). A value
+(`PRETRAIN_IMPLEMENTATION.md`, "One-Episode Audit" section). A value
 that small is exactly what a noise floor around a dead channel looks like, and
 `left_hand_data.npz` for this episode was never downloaded, so the hypothesis has
 not been tested on N0-VTLA's own copy.
@@ -163,7 +163,7 @@ Verified directly on 2026-09-09, on the pinned revision
   episode shows the "left" file carries the real signal: per-pad max values up
   to 1.62 / 0.89 / 0.71 with 13 of 15 pads nonzero, against `right_hand_data.npz`'s
   largest raw value of 0.000878119 with only 5 of 15 pads nonzero (numbers already
-  recorded in `HUMAN_PRETRAIN_AND_ROBOT_POSTTRAIN.md`'s one-episode audit). The two
+  recorded in `PRETRAIN_IMPLEMENTATION.md`'s one-episode audit). The two
   pads that read exactly zero in *both* files (pad ids 1 and 5) match, consistent
   with those being genuinely disconnected taxel groups rather than a hand-swap
   artifact.
@@ -588,7 +588,7 @@ reused as if it were a valid train-only result — it was never meant to be one.
 17. **Next**: no further correctness work is blocking. Open, larger questions:
     whether to attempt a real-robot rollout at all given physical sync is
     permanently unverified (§3.3); if so, what supervised low-speed deployment
-    gates to add first (§3's HUMAN_PRETRAIN_AND_ROBOT_POSTTRAIN.md "Post-Training
+    gates to add first (§3's PRETRAIN_IMPLEMENTATION.md "Post-Training
     and Deployment Gates" section already sketches this); and whether/how to
     obtain or approximate a comparable number from tacWAM's own reported
     results for the backbone comparison this project's Purpose section frames
@@ -645,7 +645,7 @@ delivery once downloaded (§3.4), not just the one audited so far.
 8. **Split by block, not by episode.** Blocks (`cap_smoke_b05`…`b11`) group
    repeated trials from the same session/prop placement. Hold out whole blocks
    for validation/test, per the existing recommendation in
-   `HUMAN_PRETRAIN_AND_ROBOT_POSTTRAIN.md` §"Post-Training and Deployment
+   `PRETRAIN_IMPLEMENTATION.md` §"Post-Training and Deployment
    Gates" — splitting by episode risks near-duplicate trials leaking across
    train/val.
 
@@ -734,7 +734,7 @@ which each backbone keeps in its own pretrained-native form.
 |---|---|
 | Current lab setup / status | [ROBOT_POSTTRAIN_QUICKSTART.md](ROBOT_POSTTRAIN_QUICKSTART.md) |
 | Smoke run results and alignment evidence | [WETLAB_POSTTRAIN_SMOKE.md](WETLAB_POSTTRAIN_SMOKE.md) |
-| Full study framing (human Stage 1 vs. robot post-train) | [HUMAN_PRETRAIN_AND_ROBOT_POSTTRAIN.md](HUMAN_PRETRAIN_AND_ROBOT_POSTTRAIN.md) |
+| Full study framing (human Stage 1 vs. robot post-train) | [PRETRAIN_IMPLEMENTATION.md](PRETRAIN_IMPLEMENTATION.md) |
 | Adapter implementation | `scripts/wetlab_smoke_adapter.py` |
 | Normalization stats implementation | `scripts/compute_canonical_norm.py` |
 | Batch/checkpoint verification implementation | `scripts/verify_wetlab_smoke.py` |

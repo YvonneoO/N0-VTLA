@@ -137,7 +137,7 @@ class N0VTLAConfig(Pi0Config):
     low_cpu_mem_usage: bool = False
 
     # --- Stage-1 predictor-grounding pretraining (paper Sec 4.2; NOT part of the released repo,
-    # see docs/STAGE1_PREDICTOR_PRETRAINING.md) ---
+    # see docs/PRETRAIN_IMPLEMENTATION.md) ---
     # Gates construction of ``tactile_recon_head`` and enables ``forward_stage1``. Requires
     # tactile_predictor_enabled=True. Off by default -> state_dict key set byte-unchanged.
     stage1_pretrain_enabled: bool = False
@@ -691,7 +691,7 @@ class N0VTLAPolicy(PI0Pytorch):
 
     # ------------------------------------------------------------------
     # Stage-1 predictor-grounding pretraining (paper Sec 4.2; see
-    # docs/STAGE1_PREDICTOR_PRETRAINING.md for why this is our own addition, not released code)
+    # docs/PRETRAIN_IMPLEMENTATION.md for why this is our own addition, not released code)
     # ------------------------------------------------------------------
     def _build_future_target(self, tac_f: dict, tac_t: dict, tac_mask_f: dict | None):
         """z* (Eq. 2) + Dbar (Eq. 5 target), both from the SAME (tac_{t+H} - tac_t) diff.
