@@ -411,6 +411,27 @@ empty/singleton batch、CPU 两进程 DDP、action-free transform、checkpoint u
 Loader 原有 read-only NumPy-to-tensor warning 仍存在；缺失 robot norm stats 的日志
 不表示 tactile normalization 没应用，因为 tactile 参数已经写入视频。
 
+### 6.4 Temperature=1.0 复验（2026-09-13）
+
+同一 lab Docker `n0vtla`、GPU 4，同一份 08/03 pressure_tacwam_v1 数据，10 步，
+新 exp-name `itw0803_pressure_tacwam_v1_smoke_temp1_20260913`，commit `e5df1da`：
+
+| Step | InfoNCE | Reconstruction L1 | Total | Valid/64 | Grad norm |
+|---|---:|---:|---:|---:|---:|
+| 1 | 3.9899 | 0.1447 | 4.0623 | 55 | 3.7567 |
+| 10 | 4.0336 | 0.1077 | 4.0874 | 58 | 2.7744 |
+
+进程正常跑完 10 步并保存 checkpoint（训练脚本自带的 non-finite loss/gradient
+检查全程没有触发，`FloatingPointError` 未抛出）；checkpoint 权重加载/参数量
+（123,818,048 可训练 / 3,705,436,177 冻结）与旧 0.07 版本一致。
+
+3.1 节预测的代价在真实数据上复现了：grad_norm 比旧 0.07 版本第一步小约 10 倍
+（3.76 vs 36.46），10 步内 InfoNCE 几乎不动（3.99→4.03）。Reconstruction L1
+有下降（0.1447→0.1077），因为这一项不经过 InfoNCE 的 temperature。**10 步不足以
+判断"训得很慢但有效"和"太平根本训不动"哪个是真的**，需要更长的 run（比如
+2,000 步）才能看出 InfoNCE 是否真的有下降趋势。这次只验证了"跑得通、数值有限"，
+没有验证"能不能学出东西"。
+
 ## 7. 后续短训练与评估协议
 
 ### 7.1 不要与两段 smoke 混淆
