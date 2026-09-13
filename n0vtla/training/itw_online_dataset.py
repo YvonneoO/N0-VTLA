@@ -13,19 +13,22 @@ UNCHANGED, so a sample rasterized here is pixel-identical to what the offline co
 would have produced for the same (episode, frame) -- there is no second numerical path
 to drift out of sync with the fixed train-only statistics.
 
-KNOWN-UNVERIFIED RISK (flagging explicitly, not papering over it): RGB frames are read
-via `torchcodec.decoders.VideoDecoder`'s indexed access for frame-ACCURATE random seeks.
-The offline converter (`itw_pressure.write_aligned_rgb`) deliberately avoids
-`cv2`'s `CAP_PROP_POS_FRAMES` for exactly this reason -- on H.264, OpenCV's seek often
-lands on the nearest keyframe rather than the requested frame, and unlike the offline
-path (which reads every video strictly sequentially from frame 0), an online loader
-fundamentally needs random access into shuffled (episode, frame) pairs, so the
-"just read sequentially" workaround the offline path uses isn't available here.
-torchcodec is built for accurate ML-training random access and is already a pinned
-dependency, but this module has NOT been validated against a real episode yet (no
-sample tacWAM data was available locally while writing it) -- before trusting it for a
-real training run, decode the SAME frame both through this module and through
-`itw_pressure.write_aligned_rgb` on one real episode and diff the two images.
+RGB frames are read via `torchcodec.decoders.VideoDecoder`'s indexed access for
+frame-ACCURATE random seeks. The offline converter (`itw_pressure.write_aligned_rgb`)
+deliberately avoids `cv2`'s `CAP_PROP_POS_FRAMES` for exactly this reason -- on H.264,
+OpenCV's seek often lands on the nearest keyframe rather than the requested frame, and
+unlike the offline path (which reads every video strictly sequentially from frame 0),
+an online loader fundamentally needs random access into shuffled (episode, frame)
+pairs, so the "just read sequentially" workaround isn't available here. VERIFIED
+2026-09-13 on a real tujian_v5_recent episode (VISION job 534577, scripts/
+verify_online_video_read.py): torchcodec's decode is pixel-identical (max_abs_diff=0)
+to the offline cv2-sequential path across all 3 views and multiple frame positions,
+once VISION's n0vtla conda env had FFmpeg's shared libs installed (torchcodec needs
+them at runtime and does not bundle them -- see scripts/vision_install_ffmpeg.sbatch).
+
+Also verified end-to-end (not just the video-decode path in isolation) against real
+per-task-scale normalization data: scripts/smoke_test_online_loader.py, VISION job
+534584, 45/45 real samples decoded with 0 errors.
 """
 from __future__ import annotations
 
@@ -296,3 +299,71 @@ def list_episode_dirs(raw_root: str | Path, date_dirs: list[str] | None = None) 
             continue
         episodes.extend(sorted(p for p in date_dir.iterdir() if p.is_dir()))
     return episodes
+
+
+def create_stage1_data_loader(
+    config,  # n0vtla.training.config.TrainConfig -- not type-hinted to avoid a module-level
+             # jax/lerobot import cost for callers (e.g. the smoke test) that only need the
+             # raw dataset above and never touch this function.
+    episode_dirs: list[Path],
+    normalization_path: str | Path,
+    *,
+    future_frame_offset: int,
+    default_prompt: str | None,
+):
+    """Online-loader counterpart of n0vtla.training.data_loader.create_data_loader, for
+    scripts/train_stage1_online.py.
+
+    Deliberately reuses the exact SAME transform classes the offline
+    LeRobotCanonicalTaskTactileDataConfig path applies for Stage 1 (see its `create()`
+    in n0vtla/training/config.py): Stage1ObservationOnly -> CanonicalTactileInputs ->
+    model_transforms, in that order. ITWOnlineTactileDataset's raw sample dict already
+    uses the same canonical key names (n0vtla/policies/canonical_schema.py) those
+    transforms expect, and CanonicalTactileInputs already tolerates a platform lacking
+    a given canonical view (placeholder + mask=False) -- exactly our situation, since
+    itw only has 2 of the 4 canonical tactile views and no second_third_view -- so no
+    repack step is needed before them, unlike the LeRobot path's OptionalRepack (which
+    exists to rename LeRobot column names to canonical ones; our raw dict already uses
+    the canonical names). Only the raw-dataset SOURCE differs from the offline path;
+    every transform after it, and the TorchDataLoader/collate machinery below, is the
+    identical, already-tested code the offline path uses.
+    """
+    import torch.distributed as dist
+    import torch.utils.data
+
+    import n0vtla.training.config as _config
+    import n0vtla.training.data_loader as _data
+    from n0vtla.policies import canonical_tactile_policy
+
+    model_cfg = config.model
+    raw_dataset = ITWOnlineTactileDataset(episode_dirs, normalization_path, future_frame_offset=future_frame_offset)
+    model_transforms = _config.ModelTransformFactory(default_prompt=default_prompt)(model_cfg)
+    dataset = _data.TransformedDataset(raw_dataset, [
+        canonical_tactile_policy.Stage1ObservationOnly(model_cfg.action_dim, model_cfg.action_horizon),
+        canonical_tactile_policy.CanonicalTactileInputs(flip_wrist_180=False),
+        *model_transforms.inputs,
+    ])
+
+    world_size = dist.get_world_size() if (dist.is_available() and dist.is_initialized()) else 1
+    sampler = None
+    if world_size > 1:
+        sampler = torch.utils.data.distributed.DistributedSampler(
+            dataset, num_replicas=world_size, rank=dist.get_rank(), shuffle=True, drop_last=True,
+        )
+    if config.batch_size < world_size or config.batch_size % world_size:
+        raise ValueError(f"batch_size ({config.batch_size}) must be divisible by world_size ({world_size})")
+    local_batch_size = config.batch_size // world_size
+
+    torch_loader = _data.TorchDataLoader(
+        dataset,
+        local_batch_size=local_batch_size,
+        shuffle=(sampler is None),
+        sampler=sampler,
+        num_workers=config.num_workers,
+        seed=config.seed,
+        framework="pytorch",
+    )
+    # repo_id here is informational only (nothing reads it back) -- kept human-readable for
+    # anyone inspecting the returned DataLoaderImpl's data_config() during debugging.
+    data_config = _config.DataConfig(repo_id=f"itw_online:{normalization_path}", model_transforms=model_transforms)
+    return _data.DataLoaderImpl(data_config, torch_loader)
