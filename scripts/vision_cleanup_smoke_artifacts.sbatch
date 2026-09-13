@@ -28,7 +28,10 @@ WANDB_ROOT=/scratch/project/prj-02-phai-lab/yqq/.cache/wandb
 CKPT_ROOT="$N0VTLA_ROOT/checkpoints/vtla_stage1_predictor_pretrain"
 
 echo "=== BEFORE ==="
-showquota
+# `showquota` is a login-shell alias/function, not on PATH in a plain sbatch shell --
+# first attempt (job 537399) aborted here under set -e before deleting anything.
+# du -sh on the actual paths is more directly relevant to this job anyway.
+du -sh "$N0VTLA_ROOT" 2>/dev/null || true
 
 echo
 echo "=== deleting smoke-test checkpoint dirs ==="
@@ -59,7 +62,6 @@ fi
 
 echo
 echo "=== AFTER ==="
-showquota
 du -sh "$N0VTLA_ROOT" 2>/dev/null || true
 
 echo CLEANUP_COMPLETE
