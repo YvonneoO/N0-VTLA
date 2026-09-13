@@ -123,9 +123,44 @@ class PressureTests(unittest.TestCase):
             self.assertGreater(len(mapping["master_timestamp_ns"]), 50)
             self.assertEqual(mapping["rgb_head_frame_index"][0], 2)
             self.assertTrue(all(v["invalid_frames"] == 0 for v in audit.values()))
+            self.assertTrue(all(v.all() for k, v in mapping.items() if k.endswith("_within_tolerance")))
+            # A big enough gap (10/90 frames, ~11%) drops the pass rate below tacWAM's
+            # own 95% threshold (tujian_v2.py's QC gate) -> whole episode still rejected.
             camera("wrist_left", drop=True)
-            with self.assertRaisesRegex(ValueError, "alignment exceeds"):
+            with self.assertRaisesRegex(ValueError, "only .*% of frames within"):
                 aligned_timeline(root)
+
+    def test_per_task_scale_a_few_bad_frames_stay_within_tolerance(self):
+        # tacWAM's real gate (tujian_v2.py) is a PASS-RATE threshold, not
+        # zero-tolerance-for-any-frame: a handful of misaligned ticks that stay under
+        # 5% of the stream must NOT reject the whole episode anymore (this is exactly
+        # the behavior change from the old all-or-nothing policy) -- and the offending
+        # frames must be flagged in the per-frame mask, not silently treated as valid.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with (root / "rgb_head.csv").open("w") as f:
+                writer = csv.writer(f)
+                writer.writerow(["frame_index", "timestamp_s"])
+                for i in range(90):
+                    # One single frame (i == 40) is shifted by 25ms -- over the 17.5ms
+                    # limit -- everything else is perfectly aligned. 1/90 ~= 1.1% bad.
+                    jitter = 0.025 if i == 40 else 0.0
+                    writer.writerow([i + 2, 1000 + i / 30 + jitter])
+            for view in ("wrist_left", "wrist_right"):
+                with (root / f"{view}.csv").open("w") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["frame_index", "timestamp_s"])
+                    for i in range(90):
+                        writer.writerow([i + 2, 1000 + i / 30])
+            for hand in HANDS:
+                np.savez(root / f"{hand}_hand_data.npz", timestamps=1000 + np.arange(120) / 40)
+            mapping, audit = aligned_timeline(root)
+            self.assertEqual(audit["rgb_head"]["invalid_frames"], 1)
+            self.assertLess(audit["rgb_head"]["pass_rate"], 1.0)
+            self.assertGreaterEqual(audit["rgb_head"]["pass_rate"], 0.95)
+            self.assertFalse(mapping["rgb_head_within_tolerance"].all())
+            # The other streams have zero jitter -- untouched by this change.
+            self.assertTrue(mapping["wrist_left_within_tolerance"].all())
 
 
 if __name__ == "__main__":
