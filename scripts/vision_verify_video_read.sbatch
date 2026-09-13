@@ -19,3 +19,8 @@ conda activate /scratch/project/prj-02-phai-lab/yqq/envs/n0vtla
 
 EPISODE=/scratch/project/prj-02-phai-lab/haohw/tacWAM/data/tujian_v5_recent/itw07-23/0021b7c0-b812-4ce5-9f08-31573c06977f
 python scripts/verify_online_video_read.py "$EPISODE" --positions 0,10,50,80
+
+# Also settle which task_info.json key (tacWAM's own "name" vs our read_task's "steps"
+# preference) real raw data actually uses -- needed to key the per-task tactile-scale
+# normalization lookup correctly. See scripts/inspect_task_info_schema.py.
+python scripts/inspect_task_info_schema.py "$EPISODE"
