@@ -15,6 +15,11 @@
 # itw08-10 date, ~818 episodes, not the smoke tests' 10-episode cap) converge the same
 # way as the offline materialized path did?
 #
+# Uses the NEW full-corpus per-task-scale table (docs/per_task_tactile_scale/
+# normalization_pad30_per_task_scale.json, built 2026-09-13 over itw07-23..itw09-10,
+# 345/347 tasks covered), not the old docs/v10/per_task_scale_normalization/ one that
+# only covered itw08-03..itw08-31 -- same schema string, no code change needed.
+#
 # 1000 steps (half of lab's 2000) to keep this exploratory run's wall-clock bounded --
 # real-time video decode (torchcodec) is slower per-sample than the offline path's
 # pre-materialized reads (~0.3s/sample observed in smoke tests), so this will run
@@ -35,7 +40,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 export VTLA_ITW_RAW_ROOT=/scratch/project/prj-02-phai-lab/haohw/tacWAM/data/tujian_v5_recent
 export VTLA_ITW_DATES=itw08-10
-export VTLA_ITW_NORMALIZATION=/scratch/project/prj-02-phai-lab/haohw/tacWAM/docs/v10/per_task_scale_normalization/normalization_v10_pad30_per_task_scale.json
+export VTLA_ITW_NORMALIZATION=/scratch/project/prj-02-phai-lab/haohw/tacWAM/docs/per_task_tactile_scale/normalization_pad30_per_task_scale.json
 # No VTLA_ITW_MAX_EPISODES -- use every itw08-10 episode that passes alignment (~818
 # recordings), not the smoke tests' 10-episode cap.
 export VTLA_PRETRAINED_CHECKPOINT=/scratch/project/prj-02-phai-lab/yqq/N0-VTLA/checkpoints/n0-vtla-base
