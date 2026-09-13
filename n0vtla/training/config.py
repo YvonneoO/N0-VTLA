@@ -949,11 +949,20 @@ _CONFIGS = [
         log_interval=50,
         save_interval=2_000,
         keep_period=10_000,
+        # peak_lr/decay_lr dropped 10x from the paper's from-scratch-grounding scale
+        # (1e-4 -> 1e-5) because this run warm-starts from n0-vtla-base, which already
+        # carries a NeoData-trained, action-aligned tactile predictor (n0-vtla-base is
+        # NeoteAI's own post-Stage-3 checkpoint, not the bare Sec 4.1 base -- confirmed via
+        # its README: "carries the tactile encoder, latent tactile predictor, and projection
+        # parameters"). This is continued pretraining on an already-converged module, not
+        # grounding from random init, so we deliberately perturb it as little as possible
+        # while still letting human-data exposure shift the grounding -- large single-shot
+        # runs on VISION make a wrong guess here expensive to redo.
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=500,
-            peak_lr=1e-4,
+            peak_lr=1e-5,
             decay_steps=20_000,
-            decay_lr=1e-5,
+            decay_lr=1e-6,
         ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
