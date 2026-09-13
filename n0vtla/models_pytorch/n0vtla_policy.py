@@ -147,9 +147,12 @@ class N0VTLAConfig(Pi0Config):
     # lambda_rec in the paper's L_1 = L_NCE + lambda_rec * L_rec (Eq. 5). Paper states
     # lambda_rec > 0 but does not publish a value; ours to tune.
     stage1_lambda_rec: float = 0.5
-    # Experimental temperature, retained for compatibility. Eq. 3-4 use unscaled cosine
-    # logits (temperature=1); 0.07 is a deviation, not a paper-specified default.
-    stage1_temperature: float = 0.07
+    # InfoNCE temperature. Eq. 3-4 use RAW cosine similarity as the logit (s_ij itself, no
+    # scaling term anywhere in the equations) -- i.e. temperature=1. Default matches that
+    # literally; override only for a deliberate, documented deviation (a lower temperature is
+    # the standard SimCLR/CLIP-style choice and may train more easily, but is NOT what the
+    # paper's equations show).
+    stage1_temperature: float = 1.0
 
     def load_pytorch(self, train_config, weight_path: str):
         """Serve/eval load path: build N0VTLAPolicy and load the trained weights.
@@ -784,7 +787,7 @@ class N0VTLAPolicy(PI0Pytorch):
         z_star = z_star[valid]
         hz = F.normalize(z, dim=-1)
         hzs = F.normalize(z_star, dim=-1)
-        temp = float(getattr(self.config, "stage1_temperature", 0.07))
+        temp = float(getattr(self.config, "stage1_temperature", 1.0))
         if not math.isfinite(temp) or temp <= 0:
             raise ValueError("stage1_temperature must be finite and positive")
         logits = (hz @ hzs.t()) / temp                                    # (B', B')

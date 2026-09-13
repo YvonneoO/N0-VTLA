@@ -910,12 +910,25 @@ _CONFIGS = [
                 pytorch_compile_mode=None,
                 tactile_predictor_enabled=True,
                 tactile_mode="latent",
+                # n_latent=5 (not the paper's 10): fixed by priority order, not preference.
+                # Priority 1 is warm-starting from the released n0-vtla-base checkpoint, whose
+                # TactileActionPredictor.latent_queries was itself built with n_latent=5 --
+                # changing this would shape-mismatch that parameter and force a random
+                # reinitialization, defeating the warm start. Priority 2 (match the paper) gives
+                # way here: the InfoNCE math (Eq. 3-4) mean-pools z and z* independently before
+                # the cosine-similarity matrix, so it is well-defined regardless of whether the
+                # two sides share a token count -- token-count symmetry was the paper's own
+                # experimental choice, not a requirement of the equations themselves. z*'s own
+                # token count (10, from FrozenDINOv2TactileEncoder's 1+pool_grid**2 layout) is
+                # untouched by this and still matches the paper's encoder architecture exactly.
                 n_latent=5,
                 predictor_arch="tactile_kv",
                 stage1_pretrain_enabled=True,
                 stage1_recon_grid=int(os.environ.get("VTLA_STAGE1_RECON_GRID", "8")),
                 stage1_lambda_rec=float(os.environ.get("VTLA_STAGE1_LAMBDA_REC", "0.5")),
-                stage1_temperature=float(os.environ.get("VTLA_STAGE1_TEMPERATURE", "0.07")),
+                # Eq. 3-4's literal logits are unscaled cosine similarity (temperature=1);
+                # default here matches that exactly. See N0VTLAConfig.stage1_temperature.
+                stage1_temperature=float(os.environ.get("VTLA_STAGE1_TEMPERATURE", "1.0")),
                 tactile_image_keys=cs.TACTILE_SHORT_KEYS,
             )
         )(),

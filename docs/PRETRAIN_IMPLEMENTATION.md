@@ -26,8 +26,13 @@ tactile 学习未来触觉变化，不需要机器人 action labels。
 
 它不是 Section 4.1 的完整 base pretraining，也不是 robot post-training。
 实际运行从 `n0-vtla-base` 加载，包括 checkpoint 中已有的 tactile projection 和
-predictor；只有新增 reconstruction head 随机初始化。因此应描述为已有模型上的
-human-domain Stage-1 adaptation，不能声称 tactile pathway 从零初始化复现。
+predictor；只有新增 reconstruction head 随机初始化。这是**有意选择**，不是实现
+疏漏：目标是尽量少扰动已经过 NeoData 训练的 backbone 能力，只把 Stage-1 的数据域
+换成人手 (TouchScale/itw)，而不是从随机初始化的 tactile pathway 重新走一遍论文
+Stage 1。因此准确描述是已有模型上的 human-domain **continued grounding**，
+不是论文定义下的 Stage 1（论文 Stage 1 明确是从随机初始化的 pathway 开始）；
+不能声称这是"从零初始化复现 Stage 1"，但也不应把它当作实现缺陷——这是按
+优先级排序后的正确选择（见 8.2 节的优先级说明）。
 
 ### 1.2 统一记录与历史状态
 
@@ -122,12 +127,21 @@ flow-matching action loss。`Stage1ObservationOnly` 提供接口所需的零 sta
    adaptive average pooling 得到 8x8 场。模型预测的是双手平均的粗粒度变化，
    不是两张可独立恢复的 full-hand 高分辨率图，也不是物理力单位输出。
 
-InfoNCE 对预测和目标分别 token mean-pool、L2 normalize，以 cosine similarity
-除以 `temperature=0.07` 构造 logits；两个方向交叉熵取平均。
+InfoNCE 对预测和目标分别 token mean-pool、L2 normalize；logits 就是 cosine
+similarity 本身，`temperature=1.0`（2026-09-13 由 0.07 改回，见 8.2 节：论文
+Eq.3-4 的 s_ij 直接进 softmax，没有额外缩放项，0.07 是我们之前加的、不是论文
+写法）；两个方向交叉熵取平均。
 
 ```text
 L_total = L_symmetric_InfoNCE + 0.5 * L1(predicted_8x8, target_8x8)
 ```
+
+⚠️ 实测（CPU 单元测试规模，B=64）：`temperature=1.0` 下"完全匹配"与"随机配对"
+的 loss 差距远小于 `temperature=0.07`（约 3.22 vs 4.22，chance≈4.16；0.07 时约
+0.004 vs 9.09）——即严格按论文公式，small-batch 下对比信号明显更弱，训练可能
+更慢/更难看出收敛趋势。这是"严格follow论文"这一优先级选择的已知代价，不是
+bug；如果真实训练里 loss 长期不动，`stage1_temperature` 仍是可调的 env
+var（`VTLA_STAGE1_TEMPERATURE`），但默认值现在跟论文公式一致。
 
 ### 3.2 无效样本、DDP 与更新计数
 
@@ -151,7 +165,7 @@ L_total = L_symmetric_InfoNCE + 0.5 * L1(predicted_8x8, target_8x8)
 | Global batch / workers | 64 / 8 |
 | Future horizon | 50 frames，30 Hz 下约 1.67 秒 |
 | Latent tokens / predictor | 5 / `tactile_kv` |
-| Reconstruction / temperature | 8x8，weight 0.5 / 0.07 |
+| Reconstruction / temperature | 8x8，weight 0.5 / **1.0**（2026-09-13 起；此前 smoke run 用的是 0.07，见 6.2 节历史记录与 3.1 节的实测对比） |
 | Optimizer / grad clip | AdamW / 1.0 |
 | LR schedule | warmup 500；peak 1e-4；20,000 步衰减到 1e-5 |
 | 默认总步数 | 20,000；历史 smoke 覆盖为 3，short run 覆盖为 2,000 |
@@ -469,14 +483,25 @@ python scripts/itw_tactile_smoke_adapter.py \
 第 6 节为实际 smoke 命令；第 7 节的 report shell 会准备数据、评估、训练再评估，
 不是只读查看结果命令。它不自动恢复训练，遇到部分产物应先检查而不是删目录重来。
 
-### 8.2 不能省略的限制
+### 8.2 与论文 Stage 1 的对应关系：优先级排序 + 逐项裁决
 
-| 边界 | 当前实现/风险 |
-|---|---|
-| 从零复现 | 加载已有 tactile weights；不等同于新初始化 pathway |
-| Paper 对应 | 项目原记录指出 paper latent count=10、未缩放 cosine；当前保留 5 和 temperature=0.07 |
-| 自选实现 | Target stop-gradient、8x8 view/channel-mean reconstruction、MLP、weight=0.5 均需标明，不能当作完整官方 recipe |
-| 传感器分布 | 人手压力阵列 rasterization 不等同于 vision-based tactile；frozen DINOv2 能否有效表征需实验 |
+2026-09-13 明确了这套实现相对论文 Section 4.2 Stage 1 的定位，按固定优先级裁决
+每一处不一致，不是逐项各自判断：
+
+1. **第一优先级：必须能从 `n0-vtla-base` 热启动**（保留 backbone 已有能力，只做
+   人手数据域的 continued grounding，不重新初始化整条 tactile pathway）。
+2. **第二优先级：在不违反第一优先级的前提下，严格贴合论文公式/描述**。
+3. 论文本身没给出具体数值/架构的地方（recon head 结构、分辨率、λ_rec 数值、
+   target 是否 stop-gradient），只要是给定约束下最合理的选择，就按此实现，
+   不强求"复原论文没写过的东西"。
+
+| 边界 | 裁决 | 依据 |
+|---|---|---|
+| 初始化（从零 vs 热启动） | **有意选择热启动**，不是"复现 Stage 1"，是"Stage-1-style continued grounding" | 第一优先级；论文 Stage 1 定义是从随机初始化开始，我们明确偏离这一点，换取 backbone 能力不被破坏 |
+| InfoNCE temperature | **改为 1.0**，跟论文 Eq.3-4 的未缩放 cosine 一致 | 第二优先级生效（这里不跟第一优先级冲突）；2026-09-13 由 0.07 改回，见 3.1 节的实测代价（small-batch 下对比信号更弱） |
+| z (5 tokens) vs z\* (10 tokens) 不对等 | **保留 n_latent=5，不强行凑成 10** | 第一优先级：`n0-vtla-base` 的 `TactileActionPredictor.latent_queries` 已经是 (5, D) 形状，改成 10 会形状不匹配、逼predictor 随机重新初始化，直接违反第一优先级。InfoNCE 数学（h(·) 各自 mean-pool 再算 cosine）不要求两边 token 数相等，论文的"10=10"只是他们自己的实验配置，不是公式要求，所以这个不对等**不违反方法论**，只是不复刻这一个具体超参 |
+| Reconstruction head 架构/分辨率/λ_rec/stop-gradient | **维持现有实现（2层MLP、8x8、λ=0.5、target detach）** | 论文未指定任何数值/架构；给定约束（论文只给了 loss 形式和"lightweight"这种定性描述）下的合理选择即可，不是"简化版"，是"论文留白处的最优填空" |
+| 触觉输入表征 | **确认等价，非同一传感器**：itw 光栅化压力图是按真实15-pad物理位置排布的合成灰度图（`TACTILE_SLOT_LAYOUT`，见预览 `pressure_hands_preview.png`——两只手、每指2-3段+一整块掌心，anatomically 排布正确），frame 间做像素级差分，跟论文"tactile frame差分喂给冻结视觉encoder"这个方法论上的要求一致；跟论文实际用的 vision-based 凝胶传感器**不是同一物理传感器**，frozen DINOv2 对合成光栅图 vs 真实光学形变图的特征提取效果可能不同，这个残余风险没法靠工程消除，只能靠下游 eval 验证 | 方法论等价（都是"差分图像喂冻结encoder"），传感器物理分布不同（合成 vs 真实光学），后者是数据本身的限制不是代码 bug |
 | DINO 输入 | 当前是 float 图像差分，encoder 不额外套 uint8 分支的 ImageNet normalization；见 `_dinov2_preprocess` |
 | Baseline | Episode frame 0 不一定无接触；其误差会进入当前触觉条件 |
 | 数值精度 | 固定 per-pad scaling 不保留跨 pad 绝对压力相等关系；8-bit + H.264 会损失弱信号 |
