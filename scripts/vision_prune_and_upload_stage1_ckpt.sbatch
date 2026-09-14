@@ -7,6 +7,12 @@
 #SBATCH --time=00:30:00
 #SBATCH --output=/scratch/project/prj-02-phai-lab/yqq/N0-VTLA/prune_upload_stage1_%j.log
 #
+# qqyang/zihiao_real_test is a PRE-EXISTING dataset repo (created 2026-09-08, not ours --
+# see the HF repo registry in Ego2Contact_project/rules/vision-workflow.md), so --repo-type
+# MUST be dataset, never model (a same-named model-type repo is a separate HF namespace and
+# would silently create a stray duplicate -- this bit us once on 2026-09-14, see that
+# registry entry).
+#
 # Uploads online_full_v3's latest Stage-1 checkpoint (checkpoints/vtla_stage1_predictor_pretrain/
 # online_full_v3/<highest step>) to HuggingFace under qqyang/zihiao_real_test's
 # n0-vtla_ts_pretrain/ folder, and ONLY AFTER that upload is confirmed successful, prunes
@@ -57,14 +63,14 @@ if [[ "$WHOAMI" != *"qqyang"* ]]; then
 fi
 
 echo
-echo "=== ensuring qqyang/zihiao_real_test exists (repo-type model) ==="
-hf repo create zihiao_real_test --repo-type model --token "$HF_TOKEN" || \
+echo "=== ensuring qqyang/zihiao_real_test exists (repo-type dataset) ==="
+hf repo create zihiao_real_test --repo-type dataset --token "$HF_TOKEN" || \
   echo "repo create skipped (likely already exists)"
 
 echo
 echo "=== uploading checkpoint step $LATEST to qqyang/zihiao_real_test:n0-vtla_ts_pretrain/$LATEST ==="
 hf upload qqyang/zihiao_real_test "$CKPT_ROOT/$LATEST" "n0-vtla_ts_pretrain/$LATEST" \
-  --repo-type model --token "$HF_TOKEN"
+  --repo-type dataset --token "$HF_TOKEN"
 echo "Upload confirmed (hf upload returned success) -- safe to prune now."
 
 echo
