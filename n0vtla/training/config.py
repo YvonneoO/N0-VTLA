@@ -947,7 +947,16 @@ _CONFIGS = [
         batch_size=64,
         num_workers=8,
         log_interval=50,
-        save_interval=2_000,
+        # 500, not 2000: a 4-GPU/4h sbatch segment on VISION covers ~3800-3900 steps at this
+        # run's observed throughput (~1000 steps/hr), so 2000 only landed ONE checkpoint per
+        # segment -- a segment ending (walltime or crash) between checkpoints re-does up to
+        # ~1999 steps of real training on --resume. 500 bounds that loss to <500 steps/~30min
+        # and costs little: each trainable-only checkpoint is only ~1-1.5GB (see
+        # save_stage1_checkpoint in scripts/train_stage1_predictor.py). Kept here (not a
+        # per-job sbatch env override) for the same reason as lr_schedule below: a value that
+        # matters for training quality/resumability should be a code default every submission
+        # picks up automatically, not something that has to be remembered at sbatch time.
+        save_interval=500,
         keep_period=10_000,
         # peak_lr/decay_lr dropped 10x from the paper's from-scratch-grounding scale
         # (1e-4 -> 1e-5) because this run warm-starts from n0-vtla-base, which already

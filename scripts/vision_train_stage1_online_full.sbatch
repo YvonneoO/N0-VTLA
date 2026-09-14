@@ -23,18 +23,22 @@
 # opportunities as the queue churns) and split into a --resume chain instead of one
 # long request, per user instruction, rather than holding out for one 24h slot.
 #
-# Chaining: NPROC_PER_NODE/EXP_NAME/RESUME/NUM_WORKERS/SAVE_INTERVAL/NUM_TRAIN_STEPS
-# are all overridable via --export=ALL,... (pass --gres/--cpus-per-task/--mem/--time
-# overrides on the sbatch command line too, they take precedence over the #SBATCH lines
-# above). NUM_TRAIN_STEPS defaults to the TrainConfig's own 20000 -- override it low
-# (e.g. 10-20) for a quick single-GPU full-corpus smoke test that isn't meant to
-# actually train, just to check indexing/memory/startup on the real full corpus.
+# Chaining: NPROC_PER_NODE/EXP_NAME/RESUME/NUM_WORKERS/NUM_TRAIN_STEPS are overridable
+# via --export=ALL,... (pass --gres/--cpus-per-task/--mem/--time overrides on the sbatch
+# command line too, they take precedence over the #SBATCH lines above). NUM_TRAIN_STEPS
+# defaults to the TrainConfig's own 20000 -- override it low (e.g. 10-20) for a quick
+# single-GPU full-corpus smoke test that isn't meant to actually train, just to check
+# indexing/memory/startup on the real full corpus.
 #   First run:  sbatch --export=ALL,EXP_NAME=<name> scripts/vision_train_stage1_online_full.sbatch
 #   Next link:  sbatch --dependency=afterany:<prev_jobid> \
 #                 --export=ALL,EXP_NAME=<same name>,RESUME=1 \
 #                 scripts/vision_train_stage1_online_full.sbatch
-# (checkpoints save every save_interval=2000 steps by TrainConfig default, so a link
-# that dies mid-way loses at most the steps since the last checkpoint, not the run.)
+# save_interval/lr_schedule are deliberately NOT sbatch-overridable (no SAVE_INTERVAL env
+# var here anymore) -- both are code defaults on vtla_stage1_predictor_pretrain in
+# n0vtla/training/config.py, so every submission of this script picks up whatever value
+# is currently committed without anyone having to remember an --export flag at sbatch
+# time. (checkpoints save every save_interval=500 steps by that TrainConfig default, so
+# a link that dies mid-way loses at most the steps since the last checkpoint, not the run.)
 #
 # 2026-09-13 postmortem: the first attempt (job 535274) was SLURM-OOM-killed ~47s in
 # ("Detected 1 oom_kill event in StepId=535274.batch"), well before step 1 or any
@@ -64,7 +68,6 @@ export VTLA_PRETRAINED_CHECKPOINT=/scratch/project/prj-02-phai-lab/yqq/N0-VTLA/c
 EXP_NAME="${EXP_NAME:-online_full_${SLURM_JOB_ID}}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-4}"
 NUM_WORKERS="${NUM_WORKERS:-2}"
-SAVE_INTERVAL="${SAVE_INTERVAL:-2000}"
 NUM_TRAIN_STEPS="${NUM_TRAIN_STEPS:-20000}"
 RESUME_FLAG=()
 if [[ "${RESUME:-0}" == "1" ]]; then
@@ -75,7 +78,6 @@ torchrun --standalone --nnodes=1 --nproc_per_node="$NPROC_PER_NODE" \
   scripts/train_stage1_online.py vtla_stage1_predictor_pretrain \
   --exp-name="$EXP_NAME" \
   --num-workers="$NUM_WORKERS" \
-  --save-interval="$SAVE_INTERVAL" \
   --num-train-steps="$NUM_TRAIN_STEPS" \
   --wandb-enabled \
   "${RESUME_FLAG[@]+"${RESUME_FLAG[@]}"}"
