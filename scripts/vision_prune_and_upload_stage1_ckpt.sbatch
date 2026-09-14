@@ -7,12 +7,14 @@
 #SBATCH --time=00:30:00
 #SBATCH --output=/scratch/project/prj-02-phai-lab/yqq/N0-VTLA/prune_upload_stage1_%j.log
 #
-# Prunes online_full_v3's Stage-1 checkpoints (checkpoints/vtla_stage1_predictor_pretrain/
-# online_full_v3/) down to the single highest-numbered one -- the intermediate saves from
-# segment 1 (job 537966: 500/1000/1500/2000/2500/3000) only existed so --resume could pick
-# up from any of them; once the segment ended we only need the latest -- then uploads that
-# surviving checkpoint to HuggingFace under qqyang/zihiao_real_test's n0-vtla_ts_pretrain/
-# folder. CPU-only (no GPU needed for file ops + an HF upload).
+# Uploads online_full_v3's latest Stage-1 checkpoint (checkpoints/vtla_stage1_predictor_pretrain/
+# online_full_v3/<highest step>) to HuggingFace under qqyang/zihiao_real_test's
+# n0-vtla_ts_pretrain/ folder, and ONLY AFTER that upload is confirmed successful, prunes
+# the intermediate checkpoint dirs (the ones below the highest step -- they only existed so
+# --resume could pick up from any of them mid-segment). Upload-before-delete deliberately:
+# if the upload step fails or is interrupted, `set -e` stops the script before anything is
+# deleted, so a failed/partial upload never costs us the local checkpoints too. CPU-only (no
+# GPU needed for file ops + an HF upload).
 #
 # Submit with: sbatch scripts/vision_prune_and_upload_stage1_ckpt.sbatch
 set -euo pipefail
@@ -26,7 +28,7 @@ cd /scratch/project/prj-02-phai-lab/yqq/N0-VTLA
 
 CKPT_ROOT="checkpoints/vtla_stage1_predictor_pretrain/online_full_v3"
 
-echo "=== checkpoints present before pruning ==="
+echo "=== checkpoints present ==="
 ls -1 "$CKPT_ROOT"
 
 # Highest-numbered checkpoint dir (digits-only names; skip any stray tmp_*).
@@ -46,21 +48,6 @@ fi
 echo "Latest checkpoint: step $LATEST"
 
 echo
-echo "=== deleting all other checkpoint dirs ==="
-for d in "$CKPT_ROOT"/*/; do
-  name=$(basename "$d")
-  if [[ "$name" =~ ^[0-9]+$ && "$name" != "$LATEST" ]]; then
-    du -sh "$d"
-    rm -rf "$d"
-    echo "removed: $d"
-  fi
-done
-
-echo
-echo "=== checkpoints present after pruning ==="
-ls -1 "$CKPT_ROOT"
-
-echo
 echo "=== HF auth check (must be qqyang, never the cached labmate login) ==="
 WHOAMI=$(hf auth whoami)
 echo "hf auth whoami: $WHOAMI"
@@ -78,5 +65,21 @@ echo
 echo "=== uploading checkpoint step $LATEST to qqyang/zihiao_real_test:n0-vtla_ts_pretrain/$LATEST ==="
 hf upload qqyang/zihiao_real_test "$CKPT_ROOT/$LATEST" "n0-vtla_ts_pretrain/$LATEST" \
   --repo-type model --token "$HF_TOKEN"
+echo "Upload confirmed (hf upload returned success) -- safe to prune now."
 
-echo PRUNE_AND_UPLOAD_COMPLETE
+echo
+echo "=== deleting all other checkpoint dirs (upload above already succeeded) ==="
+for d in "$CKPT_ROOT"/*/; do
+  name=$(basename "$d")
+  if [[ "$name" =~ ^[0-9]+$ && "$name" != "$LATEST" ]]; then
+    du -sh "$d"
+    rm -rf "$d"
+    echo "removed: $d"
+  fi
+done
+
+echo
+echo "=== checkpoints present after pruning ==="
+ls -1 "$CKPT_ROOT"
+
+echo UPLOAD_AND_PRUNE_COMPLETE
