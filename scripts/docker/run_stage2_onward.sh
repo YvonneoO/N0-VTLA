@@ -34,4 +34,4 @@ EXP_NAME="$EXP_NAME_POSTTRAIN" \
   bash train.sh "$@"
 
 echo "done. Final checkpoint: checkpoints/vtla_tactile_posttrain/$EXP_NAME_POSTTRAIN/ on your host"
-echo "(via the CHECKPOINTS_DIR you set in open_container.sh) -- send this directory back to us."
+echo "(via the CHECKPOINTS_DIR you set in open_container.sh) -- upload this directory to huggingface. Thanks for your help!"

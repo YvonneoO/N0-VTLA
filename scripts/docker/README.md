@@ -5,13 +5,20 @@ don't need to run Stage-1 or build anything — just pull the image and run two 
 
 ## Steps
 
-1. Edit the 4 placeholders at the top of `open_container.sh` (`DATA_DIR`,
-   `CHECKPOINTS_DIR`, `ASSETS_DIR`, `HF_TOKEN`) to real local paths / your HF token.
-2. `bash open_container.sh` — pulls the image, opens a shell inside it.
-3. Inside the container: `bash scripts/docker/quickstart.sh`
+```bash
+# 1. Edit the 4 placeholders at the top of open_container.sh:
+#    DATA_DIR, CHECKPOINTS_DIR, ASSETS_DIR, HF_TOKEN -- set them to real local
+#    paths / your HF token.
+
+# 2. Pull the image and open a shell inside it:
+bash open_container.sh
+
+# 3. Inside the container, run:
+bash scripts/docker/quickstart.sh
+```
 
 That's it. When it finishes, it prints where the final checkpoint is on your machine
-(under the `CHECKPOINTS_DIR` you set) — send that directory back to us.
+(under the `CHECKPOINTS_DIR` you set) — upload to hugging face so we can download it.
 
 To try it on a tiny scale first: `bash scripts/docker/quickstart.sh --num-train-steps=5`
 
@@ -25,21 +32,24 @@ script's top) and pass extra CLI args through to the underlying training calls.
 
 ### Env vars
 
-| Var | Used by | Default |
-|---|---|---|
-| `VTLA_STAGE1_CHECKPOINT` | Stage-2 | `checkpoints/n0-vtla_ts_pretrain` |
-| `VTLA_DATASET_PATH` / `VTLA_ASSET_ID` | Stage-2, post-train | set by the scripts |
-| `VTLA_PRETRAINED_CHECKPOINT` | all | set by the scripts |
-| `HF_TOKEN` | Stage-2's OpenNeoData download | required |
-| `CHECK_ONLY=1` | any `train_*.sh` | preflight only, no training |
-| `NPROC_PER_NODE` | all | 8 |
+
+| Var                                   | Used by                        | Default                           |
+| ------------------------------------- | ------------------------------ | --------------------------------- |
+| `VTLA_STAGE1_CHECKPOINT`              | Stage-2                        | `checkpoints/n0-vtla_ts_pretrain` |
+| `VTLA_DATASET_PATH` / `VTLA_ASSET_ID` | Stage-2, post-train            | set by the scripts                |
+| `VTLA_PRETRAINED_CHECKPOINT`          | all                            | set by the scripts                |
+| `HF_TOKEN`                            | Stage-2's OpenNeoData download | required                          |
+| `CHECK_ONLY=1`                        | any `train_*.sh`               | preflight only, no training       |
+| `NPROC_PER_NODE`                      | all                            | 8                                 |
+
+
+
 
 ### Troubleshooting
 
-- **`Could not load libtorchcodec`** — FFmpeg shared libs; already baked into the image.
+- `Could not load libtorchcodec` — FFmpeg shared libs; already baked into the image.
 - **DINOv2 cache miss** — don't override `HF_HOME`.
 - **"A full epoch had no valid future tactile targets"** — a real data QC-gate failure,
-  not a code bug (not expected on this flow since data comes from our own scripts).
+not a code bug (not expected on this flow since data comes from our own scripts).
 
-Not included: Stage-1 training (we already ran it), Stage-3 (separate branch, not
-ready), offline eval (not needed — just send back the post-train checkpoint).
+Not included: Stage-1 training (we already ran it), offline eval (not needed — just send back the post-train checkpoint).
