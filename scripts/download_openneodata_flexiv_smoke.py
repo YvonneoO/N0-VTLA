@@ -36,6 +36,26 @@ info.json's `features` dict) and only promotes/drops when the columns actually e
 treating their absence as "already canonical" rather than assuming every platform needs the
 promotion.
 
+32-dim canonical padding (added after a real Stage-2 crash on lab 2026-09-15, see below): after
+the eef_pose promotion above, `observation.state`/`action` are still their NATIVE width -- 10
+for single-arm platforms (flexiv/ur/arx5_single), 20 for bimanual (umi/arx5/aloha) -- but
+`n0vtla/policies/canonical_schema.py:44-56`'s documented layout (`left arm [0:10] =
+xyz[0:3]+rot6d[3:9]+gripper[9]`, `right arm [10:20] = same for right`, `[20:32] reserved`) and
+this repo's own `LeRobotCanonicalTaskTactileDataConfig` (config.py:464: "the on-disk state and
+action use the canonical padded 32-dimensional EEF layout") both document this as an ON-DISK
+PRECONDITION, not something the training pipeline derives at load time -- `DeltaActions` (a
+data_transform with a fixed 32-wide mask) runs BEFORE `PadStatesAndActions` (a model_transform),
+so unpadded data crashes with a broadcast ValueError the first time it's used, not a silent shape
+bug. No existing script in this repo converts OpenNeoData specifically, but
+`scripts/convert_canonical_data.py` (converts THIS repo's own raw robot logs, a different source)
+documents and pads to the exact same layout, confirming left-then-right bimanual ordering
+(`ALOHA_EEF_COLS`: left x,y,z,r1-6,gripper THEN right x,y,z,r1-6,gripper) and provides the
+reusable `_pad_to_width` helper this script mirrors below: left-aligned zero-pad to 32 dims is
+exactly correct for both cases (10-dim lands in the left-arm slot [0:10]; 20-dim lands in [0:20],
+both arms, assuming OpenNeoData's raw column order is left-then-right like this repo's own aloha
+convention -- not independently verified against OpenNeoData's own dataset card, worth
+spot-checking against real motion data before trusting a bimanual platform's real training run).
+
 Only chunk-000/file-000 is fetched (the first N episodes by episode_index, sorted) -- OpenNeoData
 packs many episodes per data/video file (v3 "packed" format), so this is already enough data for
 a smoke test without needing multiple chunk/file downloads (a separate real-scale download tool
@@ -116,6 +136,43 @@ def _canonicalize_columns(table: pa.Table, is_raw_joint_column, promote_eef_pose
     return table.rename_columns(new_names)
 
 
+CANONICAL_ACTION_DIM = 32
+
+
+def _pad_state_action_to_canonical(table: pa.Table, native_width: int) -> pa.Table:
+    """Left-aligned zero-pad `observation.state`/`action` from their native width (10 single-arm,
+    20 bimanual) to the canonical 32 dims, and add a matching `action_mask` column -- see the
+    32-dim canonical padding note in this module's docstring for why this is required on-disk
+    (mirrors scripts/convert_canonical_data.py's `_pad_to_width` for this repo's own raw-data
+    converter, applied here to OpenNeoData instead)."""
+    if native_width > CANONICAL_ACTION_DIM:
+        raise ValueError(f"native width {native_width} exceeds canonical dim {CANONICAL_ACTION_DIM}")
+    if native_width == CANONICAL_ACTION_DIM:
+        return table  # already canonical width, nothing to do
+    mask = [True] * native_width + [False] * (CANONICAL_ACTION_DIM - native_width)
+    n_rows = table.num_rows
+    mask_array = pa.array([mask] * n_rows, type=pa.list_(pa.bool_()))
+    for col in ("observation.state", "action"):
+        values = table.column(col).to_pylist()
+        padded = [row + [0.0] * (CANONICAL_ACTION_DIM - native_width) for row in values]
+        table = table.set_column(
+            table.column_names.index(col), col, pa.array(padded, type=pa.list_(pa.float32()))
+        )
+    table = table.append_column("action_mask", mask_array)
+    return table
+
+
+def _drop_narrow_stats(names: list[str]) -> list[str]:
+    """Episode-metadata `stats/observation.state/*` and `stats/action/*` sub-fields (min/max/
+    mean/std/count) stay at the NATIVE width -- there's no principled way to reshape an
+    aggregate statistic to the padded 32-dim layout, and nothing downstream reads them anyway
+    (scripts/compute_canonical_norm.py recomputes norm stats directly from the padded data
+    parquet's observation.state/action columns, never from this file). Drop them rather than
+    ship a stale, wrong-shaped artifact."""
+    return [n for n in names
+            if not (n.startswith("stats/observation.state/") or n.startswith("stats/action/"))]
+
+
 def _download(filename: str, cache_dir: Path) -> Path:
     path = hf_hub_download(repo_id=REPO_ID, repo_type="dataset", filename=filename, cache_dir=str(cache_dir))
     return Path(path)
@@ -154,6 +211,12 @@ def main() -> None:
     logging.info(f"Platform {platform}: has_eef_pose={has_eef_pose} "
                  f"({'promoting eef_pose to state/action' if has_eef_pose else 'state/action already canonical EEF'})")
     is_raw_joint_column, promote_eef_pose = _eef_pose_helpers(has_eef_pose)
+    # Native width BEFORE promotion/padding -- from the source feature that becomes the
+    # canonical observation.state (eef_pose if present, else state itself). See the 32-dim
+    # canonical padding note above for why this must be padded to CANONICAL_ACTION_DIM.
+    native_width_key = "observation.eef_pose" if has_eef_pose else "observation.state"
+    native_width = info["features"][native_width_key]["shape"][0]
+    logging.info(f"Native state/action width: {native_width} -> padding to {CANONICAL_ACTION_DIM}")
 
     episodes_table = pq.read_table(episodes_src)
     episodes_all = sorted(episodes_table.to_pylist(), key=lambda row: row["episode_index"])
@@ -179,12 +242,17 @@ def main() -> None:
     data_src = _download(f"{platform}/data/chunk-000/file-000.parquet", cache_dir)
     data_table = pq.read_table(data_src).slice(0, max_row)
     data_table = _canonicalize_columns(data_table, is_raw_joint_column, promote_eef_pose)
+    data_table = _pad_state_action_to_canonical(data_table, native_width)
     pq.write_table(data_table, args.output / "data" / "chunk-000" / "file-000.parquet")
 
-    # Episodes metadata: keep only selected rows, same column drop/promote/rename as above
-    # (including the per-episode stats/observation.state|action|eef_pose/* fields).
+    # Episodes metadata: keep only selected rows, same column drop/promote/rename as above.
+    # The per-episode stats/observation.state|action/* sub-fields are DROPPED (not padded) --
+    # see _drop_narrow_stats's docstring for why.
     episodes_table_trimmed = episodes_table.slice(0, len(selected))
     episodes_table_trimmed = _canonicalize_columns(episodes_table_trimmed, is_raw_joint_column, promote_eef_pose)
+    episodes_table_trimmed = episodes_table_trimmed.select(
+        _drop_narrow_stats(episodes_table_trimmed.column_names)
+    )
     pq.write_table(episodes_table_trimmed, args.output / "meta" / "episodes" / "chunk-000" / "file-000.parquet")
 
     # Video files: one file-000.mp4 per camera/tactile key, renamed subdirectory.
@@ -198,9 +266,15 @@ def main() -> None:
         shutil.copy(video_src, video_dst_dir / "file-000.mp4")
 
     # info.json: drop raw joint state/action features (if present), promote eef_pose -> canonical
-    # names (if present), rename image feature keys, patch episode/frame counts to match the slice.
+    # names (if present), rename image feature keys, patch episode/frame counts to match the
+    # slice, and fix up observation.state/action's shape to the padded 32 dims (+ the new
+    # action_mask feature) -- see the 32-dim canonical padding note above.
     kept_features = {k: v for k, v in info["features"].items() if not is_raw_joint_column(k)}
     renamed_features = {_rename_col(promote_eef_pose(k)): v for k, v in kept_features.items()}
+    for key in ("observation.state", "action"):
+        if key in renamed_features:
+            renamed_features[key] = {**renamed_features[key], "shape": [CANONICAL_ACTION_DIM]}
+    renamed_features["action_mask"] = {"dtype": "bool", "shape": [CANONICAL_ACTION_DIM]}
     info["features"] = renamed_features
     info["total_episodes"] = len(selected)
     info["total_frames"] = max_row
@@ -210,10 +284,12 @@ def main() -> None:
 
     shutil.copy(tasks_src, args.output / "meta" / "tasks.parquet")
     # Dataset-wide stats.json: same drop/promote/rename as the data/episodes parquet columns,
-    # applied to its top-level keys, so it doesn't keep describing dropped/renamed columns.
+    # applied to its top-level keys. observation.state/action entries are DROPPED (not padded/
+    # renamed) for the same reason as the episode-level stats -- see _drop_narrow_stats.
     stats = json.loads(stats_src.read_text())
     kept_stats = {k: v for k, v in stats.items() if not is_raw_joint_column(k)}
     renamed_stats = {_rename_col(promote_eef_pose(k)): v for k, v in kept_stats.items()}
+    renamed_stats = {k: v for k, v in renamed_stats.items() if k not in ("observation.state", "action")}
     (args.output / "meta" / "stats.json").write_text(json.dumps(renamed_stats, indent=2))
 
     logging.info(f"Wrote local OpenNeoData {platform} smoke slice ({len(selected)} episodes, "
