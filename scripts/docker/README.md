@@ -10,7 +10,10 @@ don't need to run Stage-1 or build anything — just pull the image and run two 
 #    DATA_DIR, CHECKPOINTS_DIR, ASSETS_DIR, HF_TOKEN -- set them to real local
 #    paths / your HF token.
 
-# 2. Pull the image and open a shell inside it:
+# 2. Pull the image, then run open_container.sh to open a shell inside it
+#    (open_container.sh does this pull itself -- shown here so you can run it
+#    ahead of time / verify network access first):
+docker pull qqyang/n0vtla_train:latest
 bash open_container.sh
 
 # 3. Inside the container, run:
