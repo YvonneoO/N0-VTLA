@@ -1,0 +1,111 @@
+#!/usr/bin/env python
+"""Merges a Stage-1 trainable-only checkpoint on top of a full base checkpoint, producing
+ONE complete model.safetensors that `scripts/train_pytorch.py` (post-training, e.g.
+`vtla_tactile_posttrain`) can load unmodified via its existing weight-loading path.
+
+Why this is needed: `save_stage1_checkpoint` (train_stage1_predictor.py) saves only the
+~123M trainable tactile params (STAGE1_TRAINABLE_PREFIXES), not the full ~3.8B-param policy
+-- see that module's docstring for why (checkpoint bloat: saving the whole frozen base every
+2000 steps was ~8.7GB/save for no reason, since the base never changes during Stage 1). Our
+own Stage-1 training scripts load the base and this delta as two separate steps
+(load_stage1_policy_weights then load_stage1_checkpoint) because we wrote that logic
+ourselves. `train_pytorch.py`'s post-train path does NOT know about this two-step format --
+it does one `safetensors.torch.load_model(model, "<pytorch_weight_path>/model.safetensors",
+strict=False)` call and nothing else (see its ~line 541-552). Pointing
+VTLA_PRETRAINED_CHECKPOINT directly at a Stage-1 trainable-only checkpoint would silently
+leave the entire frozen VLM + action expert (everything NOT in STAGE1_TRAINABLE_PREFIXES) at
+random init, since strict=False lets missing keys through without erroring.
+
+So: merge base + Stage-1 delta into one file HERE, once, offline, and point
+VTLA_PRETRAINED_CHECKPOINT at the merged output directory for post-training.
+
+Usage:
+    python scripts/merge_stage1_into_base_checkpoint.py \\
+        --base-checkpoint /scratch/.../N0-VTLA/checkpoints/n0-vtla-base \\
+        --stage1-checkpoint /scratch/.../N0-VTLA/checkpoints/vtla_stage1_predictor_pretrain/online_full_v3/14000 \\
+        --output /scratch/.../N0-VTLA/checkpoints/n0-vtla-base_plus_online_full_v3_14000
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+from pathlib import Path
+
+import safetensors.torch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from train_stage1_predictor import STAGE1_TRAINABLE_PREFIXES  # noqa: E402
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--base-checkpoint", required=True, help="Dir containing the FULL base "
+                         "policy's model.safetensors (e.g. n0-vtla-base).")
+    parser.add_argument("--stage1-checkpoint", required=True, help="Dir containing a Stage-1 "
+                         "trainable-only checkpoint's model.safetensors (e.g. "
+                         "checkpoints/vtla_stage1_predictor_pretrain/<exp>/<step>).")
+    parser.add_argument("--output", required=True, help="Output dir for the merged, complete "
+                         "model.safetensors. Must not already exist unless --overwrite.")
+    parser.add_argument("--overwrite", action="store_true")
+    args = parser.parse_args()
+
+    base_path = Path(args.base_checkpoint)
+    base_weights_file = base_path / "model.safetensors" if base_path.is_dir() else base_path
+    stage1_path = Path(args.stage1_checkpoint)
+    stage1_weights_file = stage1_path / "model.safetensors" if stage1_path.is_dir() else stage1_path
+    if not base_weights_file.is_file():
+        raise FileNotFoundError(f"Base checkpoint missing: {base_weights_file}")
+    if not stage1_weights_file.is_file():
+        raise FileNotFoundError(f"Stage-1 checkpoint missing: {stage1_weights_file}")
+
+    output_dir = Path(args.output)
+    if output_dir.exists() and not args.overwrite:
+        raise FileExistsError(f"{output_dir} already exists; pass --overwrite to replace it")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"Loading base checkpoint: {base_weights_file}")
+    base_state = safetensors.torch.load_file(base_weights_file)
+    print(f"  {len(base_state)} tensors")
+
+    print(f"Loading Stage-1 delta: {stage1_weights_file}")
+    stage1_state = safetensors.torch.load_file(stage1_weights_file)
+    print(f"  {len(stage1_state)} tensors")
+
+    # Sanity: every Stage-1 tensor must (a) fall under the known trainable prefixes -- so we're
+    # not silently merging in something unexpected -- and (b) already exist in base with a
+    # matching shape, so this is truly an override, not introducing new/renamed parameters.
+    bad_prefix = [name for name in stage1_state if not name.startswith(STAGE1_TRAINABLE_PREFIXES)]
+    if bad_prefix:
+        raise ValueError(f"Stage-1 checkpoint has tensors outside STAGE1_TRAINABLE_PREFIXES: {bad_prefix}")
+    missing_in_base = [name for name in stage1_state if name not in base_state]
+    if missing_in_base:
+        raise ValueError(f"Stage-1 tensors not present in base checkpoint (architecture mismatch?): {missing_in_base}")
+    shape_mismatch = [
+        name for name, t in stage1_state.items() if tuple(t.shape) != tuple(base_state[name].shape)
+    ]
+    if shape_mismatch:
+        raise ValueError(f"Shape mismatch between base and Stage-1 for: {shape_mismatch}")
+
+    merged_state = dict(base_state)
+    merged_state.update(stage1_state)
+    print(f"Merged: {len(stage1_state)} tensors overridden, {len(merged_state) - len(stage1_state)} kept from base "
+          f"({len(merged_state)} total).")
+
+    out_file = output_dir / "model.safetensors"
+    safetensors.torch.save_file(merged_state, out_file)
+    (output_dir / "merge_provenance.json").write_text(json.dumps({
+        "base_checkpoint": str(base_weights_file),
+        "stage1_checkpoint": str(stage1_weights_file),
+        "overridden_tensor_count": len(stage1_state),
+        "total_tensor_count": len(merged_state),
+        "timestamp": time.time(),
+    }, indent=2))
+    print(f"Wrote merged checkpoint: {out_file}")
+    print("Point VTLA_PRETRAINED_CHECKPOINT at this output directory for post-training "
+          "(train_pytorch.py's weight loader reads <dir>/model.safetensors directly, strict=False).")
+
+
+if __name__ == "__main__":
+    main()
