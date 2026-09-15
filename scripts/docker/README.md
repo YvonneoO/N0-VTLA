@@ -1,11 +1,13 @@
-# N0-VTLA training image (Stage-1 + post-train)
+# N0-VTLA training image (Stage-1 + Stage-2 + post-train)
 
 ## Scope
 
-This image packages **Stage-1 predictor-grounding pretraining** (paper Sec 4.2,
-action-free, human ITW tactile data, `train_stage1.sh` → `scripts/train_stage1_online.py`)
-and **post-training** (action-conditioned, robot LeRobot-format data, `train.sh` →
-`scripts/train_n0vtla.py`). **Stage-2/3 (latent↔action-expert alignment) are NOT
+This image packages the full `Stage-1 → Stage-2 → post-train → offline eval` chain:
+**Stage-1 predictor-grounding pretraining** (paper Sec 4.2, action-free, human ITW
+tactile data, `train_stage1.sh` → `scripts/train_stage1_online.py`), **Stage-2
+latent-to-expert alignment** (paper Sec 4.2, `train_stage2.sh` →
+`scripts/train_stage2_align_expert.py`), and **post-training** (action-conditioned,
+robot LeRobot-format data, `train.sh` → `scripts/train_n0vtla.py`). **Stage-3 is NOT
 included** — that work is still in progress on a separate branch.
 
 Downloading/preparing your own data (from AWS S3 or elsewhere) is entirely your own
@@ -78,7 +80,19 @@ somewhere without that (e.g. an air-gapped target server), build it elsewhere an
    against single-wrist-camera robot data) — don't attempt to substitute a missing
    view without addressing this in code first.
 
-3. **Post-train data** — your own robot dataset in LeRobot format:
+3. **Stage-2 data** — a slice of `NeoteAIEmbodied/OpenNeoData` (HuggingFace, **gated,
+   not S3** — a different credential model than Stage-1/post-train's data, see the
+   Stage-2 section below), already in canonical LeRobot-v3 layout once downloaded via
+   `scripts/download_openneodata_flexiv_smoke.py`:
+   ```
+   <dataset_root>/
+     meta/info.json, meta/tasks.parquet, meta/episodes/chunk-000/file-000.parquet
+     data/chunk-000/file-000.parquet
+     videos/<view_key>/chunk-000/file-000.mp4
+   ```
+   Plus a precomputed `norm_stats.json` under `assets/vtla_stage2_align_expert/<asset_id>/`.
+
+4. **Post-train data** — your own robot dataset in LeRobot format:
    ```
    <dataset_root>/
      meta/info.json
@@ -142,6 +156,61 @@ only if you've fit your own table. Any task name not present in that table's
 `task_scale` silently falls back to its `default_scale` (no code change needed for new
 tasks — see `scripts/itw_pressure.py:normalize_pressure`).
 
+## Run — Stage-2
+
+Stage-2's data source is **Hugging Face, not AWS S3** — a different credential model
+than Stage-1/post-train. Download a slice first (any of `flexiv`/`umi`/`arx5`/`ur`/
+`aloha`/`umi_single`/`arx5_single` — all 7 OpenNeoData platforms have tactile channels
+and work with the same canonical data config; see `scripts/download_openneodata_
+flexiv_smoke.py`'s module docstring for the full per-platform notes):
+
+```bash
+docker run --rm \
+  -e HF_TOKEN=<your token, needs OpenNeoData gated-dataset access> \
+  -v $PWD/data:/data \
+  n0vtla_train python scripts/download_openneodata_flexiv_smoke.py \
+    --platform flexiv --output /data/openneodata_smoke --num-episodes 2
+```
+
+Then compute norm stats for it (`VTLA_ASSET_ID` names this run for later reuse):
+```bash
+docker run --rm -v $PWD/data:/data -v $PWD/assets:/app/assets \
+  n0vtla_train python scripts/compute_canonical_norm.py \
+    --train-config-name vtla_stage2_align_expert \
+    --repo-id /data/openneodata_smoke --asset-id openneodata_smoke
+```
+
+Then run Stage-2 itself, warm-starting from BOTH the base checkpoint AND Stage-1's own
+checkpoint (Stage-1's trainable-only output — either your own, e.g.
+`checkpoints/vtla_stage1_predictor_pretrain/<exp_name>/`, or one already on HF, e.g.
+`qqyang/zihiao_real_test:n0-vtla_ts_pretrain/<step>/`):
+
+```bash
+docker run --rm --gpus=all \
+  -v $PWD/checkpoints:/app/checkpoints -v $PWD/data:/data -v $PWD/assets:/app/assets \
+  -e VTLA_PRETRAINED_CHECKPOINT=/app/checkpoints/n0-vtla-base \
+  -e VTLA_STAGE1_CHECKPOINT=/app/checkpoints/vtla_stage1_predictor_pretrain/<exp_name> \
+  -e VTLA_DATASET_PATH=/data/openneodata_smoke -e VTLA_ASSET_ID=openneodata_smoke \
+  -e NPROC_PER_NODE=8 \
+  n0vtla_train bash train_stage2.sh
+```
+
+Same `CHECK_ONLY=1` pattern applies. Stage-2 saves a trainable-only checkpoint (same
+format as Stage-1's), NOT something post-train can load directly — merge it first:
+
+```bash
+# Step 3.5 -- explicit, not auto-chained after train_stage2.sh, so the pipeline stays
+# inspectable step by step. CPU-only, fast.
+docker run --rm -v $PWD/checkpoints:/app/checkpoints \
+  n0vtla_train python scripts/merge_stage2_checkpoint_for_posttrain.py \
+    --base-checkpoint /app/checkpoints/n0-vtla-base \
+    --stage1-checkpoint /app/checkpoints/vtla_stage1_predictor_pretrain/<exp_name> \
+    --stage2-checkpoint /app/checkpoints/vtla_stage2_align_expert/<exp_name> \
+    --output /app/checkpoints/merged_for_posttrain
+```
+Point post-train's `VTLA_PRETRAINED_CHECKPOINT` at this merged output below, not at
+the original base checkpoint, to actually pick up the Stage-1+Stage-2 training.
+
 ## Run — post-train
 
 ```bash
@@ -159,22 +228,24 @@ Same `CHECK_ONLY=1` pattern applies.
 
 ## Env var reference
 
-| Var | Stage-1 | Post-train | Required | Default |
-|---|:-:|:-:|:-:|---|
-| `VTLA_ITW_RAW_ROOT` | yes | — | yes | none |
-| `VTLA_ITW_NORMALIZATION` | yes | — | no | committed `assets/itw_normalization/...json` |
-| `VTLA_ITW_DATES` | yes | — | no | every date under `VTLA_ITW_RAW_ROOT` |
-| `VTLA_ITW_MAX_EPISODES` | yes | — | no | all (smoke-test cap only) |
-| `VTLA_STAGE1_FUTURE_OFFSET` | yes | — | no | 50 |
-| `VTLA_STAGE1_RECON_GRID` / `_LAMBDA_REC` / `_TEMPERATURE` | yes | — | no | 8 / 0.5 / 1.0 |
-| `VTLA_DATASET_PATH` | — | yes | yes | none |
-| `VTLA_ASSET_ID` | — | yes | no | `canonical_tactile_task` |
-| `VTLA_PRETRAINED_CHECKPOINT` | yes | yes | yes | none |
-| `VTLA_DEFAULT_PROMPT` | yes | yes | no | `"Perform the task."` |
-| `CONFIG_NAME` | `vtla_stage1_predictor_pretrain` | `vtla_tactile_posttrain` | — | per-script |
-| `EXP_NAME` | `stage1_online` | `tactile_posttrain` | no | per-script |
-| `NPROC_PER_NODE` | yes | yes | no | 8 |
-| `CHECK_ONLY` | yes | yes | no | 0 |
+| Var | Stage-1 | Stage-2 | Post-train | Required | Default |
+|---|:-:|:-:|:-:|:-:|---|
+| `VTLA_ITW_RAW_ROOT` | yes | — | — | yes (Stage-1) | none |
+| `VTLA_ITW_NORMALIZATION` | yes | — | — | no | committed `assets/itw_normalization/...json` |
+| `VTLA_ITW_DATES` | yes | — | — | no | every date under `VTLA_ITW_RAW_ROOT` |
+| `VTLA_ITW_MAX_EPISODES` | yes | — | — | no | all (smoke-test cap only) |
+| `VTLA_STAGE1_FUTURE_OFFSET` | yes | — | — | no | 50 |
+| `VTLA_STAGE1_RECON_GRID` / `_LAMBDA_REC` / `_TEMPERATURE` | yes | — | — | no | 8 / 0.5 / 1.0 |
+| `VTLA_STAGE1_CHECKPOINT` | — | yes | — | yes (Stage-2) | none |
+| `VTLA_DATASET_PATH` | — | yes | yes | yes (Stage-2/post-train) | none |
+| `VTLA_ASSET_ID` | — | yes | yes | yes (Stage-2) / no (post-train) | `canonical_tactile_task` (post-train only) |
+| `VTLA_PRETRAINED_CHECKPOINT` | yes | yes | yes | yes | none |
+| `VTLA_DEFAULT_PROMPT` | yes | — | yes | no | `"Perform the task."`/`"do the task"` |
+| `HF_TOKEN` | — | yes (download step) | — | yes for OpenNeoData | none |
+| `CONFIG_NAME` | `vtla_stage1_predictor_pretrain` | `vtla_stage2_align_expert` | `vtla_tactile_posttrain` | — | per-script |
+| `EXP_NAME` | `stage1_online` | `stage2_align` | `tactile_posttrain` | no | per-script |
+| `NPROC_PER_NODE` | yes | yes | yes | no | 8 |
+| `CHECK_ONLY` | yes | yes | yes | no | 0 |
 
 ## Troubleshooting
 
@@ -197,6 +268,7 @@ Same `CHECK_ONLY=1` pattern applies.
 
 ## Non-goals
 
-- Downloading or preparing data from S3 (or anywhere else) is the operator's job —
-  this image assumes data is already unpacked locally in the layouts above.
-- Stage-2/3 packaging (separate branch, not ready yet).
+- Downloading or preparing data from S3/HuggingFace is the operator's job — this image
+  assumes data is already unpacked locally in the layouts above (Stage-1/post-train)
+  or produced by the download script (Stage-2).
+- Stage-3 packaging (separate branch, not ready yet).

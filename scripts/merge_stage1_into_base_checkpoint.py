@@ -73,24 +73,37 @@ def main() -> None:
     stage1_state = safetensors.torch.load_file(stage1_weights_file)
     print(f"  {len(stage1_state)} tensors")
 
-    # Sanity: every Stage-1 tensor must (a) fall under the known trainable prefixes -- so we're
-    # not silently merging in something unexpected -- and (b) already exist in base with a
-    # matching shape, so this is truly an override, not introducing new/renamed parameters.
+    # Sanity: every Stage-1 tensor must fall under the known trainable prefixes -- so we're not
+    # silently merging in something unexpected.
     bad_prefix = [name for name in stage1_state if not name.startswith(STAGE1_TRAINABLE_PREFIXES)]
     if bad_prefix:
         raise ValueError(f"Stage-1 checkpoint has tensors outside STAGE1_TRAINABLE_PREFIXES: {bad_prefix}")
+
+    # tactile_recon_head is constructed ONLY when stage1_pretrain_enabled=True (see
+    # N0VTLAPolicy.__init__ in n0vtla_policy.py) -- it's Stage-1-training-only scaffolding for
+    # the auxiliary L1 reconstruction loss and is NEVER part of n0-vtla-base or any post-train
+    # config's model (vtla_tactile_posttrain doesn't set stage1_pretrain_enabled). So it has no
+    # home to merge into downstream -- expected and dropped, not an error. Anything else missing
+    # from base (tactile_encoder.tactile_proj.* / tactile_predictor.*) IS a real mismatch, since
+    # both of those ARE part of every config that has tactile_predictor_enabled=True.
     missing_in_base = [name for name in stage1_state if name not in base_state]
+    unexpected_missing = [name for name in missing_in_base if not name.startswith("tactile_recon_head.")]
+    if unexpected_missing:
+        raise ValueError(f"Stage-1 tensors not present in base checkpoint (architecture mismatch?): {unexpected_missing}")
     if missing_in_base:
-        raise ValueError(f"Stage-1 tensors not present in base checkpoint (architecture mismatch?): {missing_in_base}")
+        print(f"Dropping {len(missing_in_base)} tactile_recon_head.* tensors (Stage-1-only, not part of "
+              f"the post-train model architecture, no home to merge into): {missing_in_base}")
+
+    mergeable_state = {name: t for name, t in stage1_state.items() if name in base_state}
     shape_mismatch = [
-        name for name, t in stage1_state.items() if tuple(t.shape) != tuple(base_state[name].shape)
+        name for name, t in mergeable_state.items() if tuple(t.shape) != tuple(base_state[name].shape)
     ]
     if shape_mismatch:
         raise ValueError(f"Shape mismatch between base and Stage-1 for: {shape_mismatch}")
 
     merged_state = dict(base_state)
-    merged_state.update(stage1_state)
-    print(f"Merged: {len(stage1_state)} tensors overridden, {len(merged_state) - len(stage1_state)} kept from base "
+    merged_state.update(mergeable_state)
+    print(f"Merged: {len(mergeable_state)} tensors overridden, {len(merged_state) - len(mergeable_state)} kept from base "
           f"({len(merged_state)} total).")
 
     out_file = output_dir / "model.safetensors"
@@ -98,7 +111,8 @@ def main() -> None:
     (output_dir / "merge_provenance.json").write_text(json.dumps({
         "base_checkpoint": str(base_weights_file),
         "stage1_checkpoint": str(stage1_weights_file),
-        "overridden_tensor_count": len(stage1_state),
+        "overridden_tensor_count": len(mergeable_state),
+        "dropped_stage1_only_tensors": missing_in_base,
         "total_tensor_count": len(merged_state),
         "timestamp": time.time(),
     }, indent=2))
