@@ -986,11 +986,21 @@ _CONFIGS = [
     # large-scale Stage 2 re-run): n0-vtla-base's action expert was already taught to consume z
     # by NeoteAI's own Stage 2/3, so this only needs to re-bridge a MODEST shift from continued
     # human-data Stage-1 fine-tuning, on a small local slice of the real NeoData
-    # (NeoteAIEmbodied/OpenNeoData's flexiv platform -- see
-    # scripts/download_openneodata_flexiv_smoke.py), not a full re-alignment run. Not part of
-    # the released repo; action_dim/tactile settings mirror flexiv_tactile_reference/
+    # (NeoteAIEmbodied/OpenNeoData -- see scripts/download_openneodata_flexiv_smoke.py), not a
+    # full re-alignment run. Not part of the released repo; action_dim/tactile settings mirror
     # vtla_stage1_predictor_pretrain above (n_latent=5, tactile_kv) since this MUST shape-match
     # the Stage-1 checkpoint it loads a delta from.
+    #
+    # data= uses the CANONICAL config (LeRobotCanonicalTaskTactileDataConfig), not the
+    # Flexiv-specific one, so this consumes ANY of OpenNeoData's 7 platforms, not just flexiv --
+    # confirmed 2026-09-15 via direct HF metadata probes that all 7 platforms have tactile
+    # channels (3 of them, umi/arx5/aloha, are bimanual: 4 tactile keys vs flexiv's 2), and that
+    # LeRobotFlexivTactileDataConfig is single-arm-hardcoded (action_dim=10, a 3-camera
+    # whitelist, a single-arm delta mask) -- it would silently truncate/drop the right-arm
+    # action on a bimanual platform, not just "not support" it. The canonical config's
+    # OptionalRepack already tolerates a dataset simply lacking some of the 8 canonical image
+    # keys (this is the SAME data config vtla_stage1_predictor_pretrain already uses), so no new
+    # multi-platform logic was needed here -- just this swap.
     TrainConfig(
         name="vtla_stage2_align_expert",
         model=(
@@ -1009,18 +1019,20 @@ _CONFIGS = [
                 # Paper: "the keys and values from the vision-language prefix are masked out
                 # for the action queries" -- see N0VTLAPolicy._vl_dropout_keep, p=1.0 is exact.
                 vl_dropout_prob=1.0,
-                tactile_image_keys=("left_wrist_left_tactile", "left_wrist_right_tactile"),
+                # 4-key canonical list (was a flexiv-only 2-key tuple) -- N0VTLAPolicy._tactile_keys
+                # is documented as view-count-agnostic (2 single-arm or 4 dual-arm, no hardcoded
+                # count), so this needs no model/architecture change, only this key-list swap.
+                tactile_image_keys=cs.TACTILE_SHORT_KEYS,
             )
         )(),
-        data=LeRobotFlexivTactileDataConfig(
-            repo_id=os.environ.get("VTLA_DATASET_PATH", "/path/to/datasets/openneodata_flexiv_smoke"),
+        data=LeRobotCanonicalTaskTactileDataConfig(
+            repo_id=os.environ.get("VTLA_DATASET_PATH", "/path/to/datasets/openneodata_smoke"),
+            tolerance_s=0.04,
             use_delta_eef_actions=True,
-            default_prompt="do the task",
-            tactile_keys=_FLEXIV_TACTILE_KEYS,
+            default_prompt=os.environ.get("VTLA_DEFAULT_PROMPT", "do the task"),
             assets=AssetsConfig(
-                asset_id=os.environ.get("VTLA_ASSET_ID", "openneodata_flexiv_smoke"),
+                asset_id=os.environ.get("VTLA_ASSET_ID", "openneodata_smoke"),
             ),
-            base_config=DataConfig(prompt_from_task=True),
         ),
         batch_size=64,
         num_workers=8,
