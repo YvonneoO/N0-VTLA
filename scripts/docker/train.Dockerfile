@@ -32,12 +32,20 @@ RUN apt-get update \
         linux-headers-generic \
     && rm -rf /var/lib/apt/lists/*
 
+# Anaconda now gates the default `main`/`r` channels behind a Terms of Service
+# click-through; a fresh install's non-interactive `conda create` fails with
+# CondaToSNonInteractiveError until it's accepted explicitly (hit on lab 2026-09-15 --
+# serve_policy.Dockerfile predates this gate, hence no mention there). The `conda tos
+# accept` calls below must come BEFORE `conda create`, not folded into a comment mid-chain
+# (a `#`-comment line inside a `\`-continued RUN breaks the `&&` chain in `sh`/`bash`).
 ARG MINICONDA_VERSION=py311_25.5.1-0
 RUN curl -fsSL \
         "https://repo.anaconda.com/miniconda/Miniconda3-${MINICONDA_VERSION}-Linux-x86_64.sh" \
         -o /tmp/miniconda.sh \
     && bash /tmp/miniconda.sh -b -p /opt/conda \
     && rm /tmp/miniconda.sh \
+    && /opt/conda/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main \
+    && /opt/conda/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r \
     && /opt/conda/bin/conda create -y -n vtla python=3.11 \
     && /opt/conda/bin/conda clean -afy
 
