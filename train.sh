@@ -5,7 +5,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${REPO_ROOT:-$SCRIPT_DIR}"
 CONFIG_NAME="${CONFIG_NAME:-vtla_tactile_posttrain}"
 EXP_NAME="${EXP_NAME:-tactile_posttrain}"
-NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
+if [[ -z "${NPROC_PER_NODE:-}" ]]; then
+  NPROC_PER_NODE="$(nvidia-smi -L 2>/dev/null | wc -l | tr -d '[:space:]')"
+  [[ -z "$NPROC_PER_NODE" || "$NPROC_PER_NODE" == "0" ]] && NPROC_PER_NODE=8
+fi
 CHECK_ONLY="${CHECK_ONLY:-0}"
 
 usage() {
@@ -16,7 +19,7 @@ Usage:
 Environment variables:
   CONFIG_NAME=vtla_tactile_posttrain
   EXP_NAME=tactile_posttrain
-  NPROC_PER_NODE=8
+  NPROC_PER_NODE=<auto-detected via nvidia-smi, falls back to 8>
   CHECK_ONLY=0
   VTLA_DATASET_PATH=/path/to/dataset
   VTLA_PRETRAINED_CHECKPOINT=/path/to/checkpoint

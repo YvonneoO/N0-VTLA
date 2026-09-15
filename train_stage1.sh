@@ -12,7 +12,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${REPO_ROOT:-$SCRIPT_DIR}"
 CONFIG_NAME="${CONFIG_NAME:-vtla_stage1_predictor_pretrain}"
 EXP_NAME="${EXP_NAME:-stage1_online}"
-NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
+if [[ -z "${NPROC_PER_NODE:-}" ]]; then
+  NPROC_PER_NODE="$(nvidia-smi -L 2>/dev/null | wc -l | tr -d '[:space:]')"
+  [[ -z "$NPROC_PER_NODE" || "$NPROC_PER_NODE" == "0" ]] && NPROC_PER_NODE=8
+fi
 CHECK_ONLY="${CHECK_ONLY:-0}"
 
 usage() {
@@ -23,7 +26,7 @@ Usage:
 Environment variables:
   CONFIG_NAME=vtla_stage1_predictor_pretrain
   EXP_NAME=stage1_online
-  NPROC_PER_NODE=8
+  NPROC_PER_NODE=<auto-detected via nvidia-smi, falls back to 8>
   CHECK_ONLY=0
   VTLA_ITW_RAW_ROOT=/path/to/raw_itw_root          (required)
   VTLA_PRETRAINED_CHECKPOINT=/path/to/checkpoint    (required)
