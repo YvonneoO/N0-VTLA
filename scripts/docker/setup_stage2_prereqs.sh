@@ -22,13 +22,19 @@ hf download qqyang/zihiao_real_test --repo-type dataset \
 echo "[3/4] Stage-2 data slice ($OPENNEODATA_PLATFORM, $OPENNEODATA_EPISODES episodes) + norm stats"
 python scripts/download_openneodata_flexiv_smoke.py --platform "$OPENNEODATA_PLATFORM" \
   --output data/openneodata_smoke --num-episodes "$OPENNEODATA_EPISODES"
+case "$OPENNEODATA_PLATFORM" in
+  umi|arx5|aloha) STAGE2_ROBOT=aloha ;;  # bimanual platforms
+  *) STAGE2_ROBOT=flexiv ;;              # single-arm platforms
+esac
 python scripts/compute_canonical_norm.py --train-config-name vtla_stage2_align_expert \
-  --repo-id data/openneodata_smoke --asset-id openneodata_smoke
+  --robot "$STAGE2_ROBOT" --repo-id data/openneodata_smoke --asset-id openneodata_smoke
 
 echo "[4/4] post-train wetlab data (ready-made) + norm stats"
+# NOTE: --include takes multiple space-separated patterns in ONE flag (nargs='*');
+# passing --include twice makes the second occurrence silently replace the first.
 hf download qqyang/zihiao_real_test --repo-type dataset \
-  --include "n0vtla_wetlab_canonical_v2/train/**" \
-  --include "n0vtla_wetlab_canonical_v2/holdout/**" --local-dir data
+  --include "n0vtla_wetlab_canonical_v2/train/**" "n0vtla_wetlab_canonical_v2/holdout/**" \
+  --local-dir data
 python scripts/compute_canonical_norm.py --train-config-name vtla_tactile_posttrain --robot aloha \
   --repo-id data/n0vtla_wetlab_canonical_v2/train --asset-id wetlab_v2_train
 
