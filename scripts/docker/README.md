@@ -1,25 +1,13 @@
 # N0-VTLA training image (Stage-1 + Stage-2 + post-train)
 
-## Scope
+Packages the `Stage-1 → Stage-2 → post-train → offline eval` chain. Stage-3 not included.
 
-This image packages the full `Stage-1 → Stage-2 → post-train → offline eval` chain:
-**Stage-1 predictor-grounding pretraining** (paper Sec 4.2, action-free, human ITW
-tactile data, `train_stage1.sh` → `scripts/train_stage1_online.py`), **Stage-2
-latent-to-expert alignment** (paper Sec 4.2, `train_stage2.sh` →
-`scripts/train_stage2_align_expert.py`), and **post-training** (action-conditioned,
-robot LeRobot-format data, `train.sh` → `scripts/train_n0vtla.py`). **Stage-3 is NOT
-included** — that work is still in progress on a separate branch.
+**Validated end-to-end on lab (2026-09-15)** with real data for all three sources:
+AWS S3 human ITW data (Stage-1), HuggingFace `NeoteAIEmbodied/OpenNeoData` (Stage-2),
+and the ready-made wetlab dataset on HF (post-train). See git history for details.
 
-Downloading/preparing your own data (from AWS S3 or elsewhere) is entirely your own
-responsibility. This image and the code inside it need nothing beyond: the image
-itself, a pretrained checkpoint, and your data in the layouts documented below.
-`awscli` is baked in for exactly this (see "Simplest path" below) — no credentials are
-ever baked in, only the CLI tool.
-
-The image ships a real, remote-configured `git` checkout (not a stripped-down copy),
-so `git pull` inside a running container picks up a code update without a full
-rebuild: `docker run --rm ... n0vtla_train bash -lc "git pull && ..."` (needs network +
-repo read access at pull time, same as any other `git pull`).
+The image ships a real `git` checkout, so `git pull` inside a container picks up code
+updates without a rebuild.
 
 ## Build
 
@@ -27,116 +15,28 @@ repo read access at pull time, same as any other `git pull`).
 docker build . -t n0vtla_train -f scripts/docker/train.Dockerfile
 ```
 
-The CUDA base image defaults to `12.2.2-cudnn8-runtime-ubuntu22.04` (Ampere/Hopper).
-For a different GPU architecture (e.g. Blackwell needs cu128-class images — see
-`docs/PRETRAIN_IMPLEMENTATION.md`'s note that cu126 wheels had kernel issues there),
-override it:
-
+Default CUDA base is `12.2.2-cudnn8-runtime-ubuntu22.04`. Override for other GPU
+archs (e.g. Blackwell needs cu128):
 ```bash
 docker build . -t n0vtla_train -f scripts/docker/train.Dockerfile \
   --build-arg CUDA_IMAGE_TAG=12.8.0-cudnn-runtime-ubuntu22.04
 ```
 
-Find the right tag by checking the target host's driver version (`nvidia-smi`) against
-[nvidia/cuda's tag list](https://hub.docker.com/r/nvidia/cuda/tags).
+## Prerequisites
 
-`requirements.txt` pulls `lerobot` via a `pip install git+https://...` dependency —
-the build environment needs outbound git/network access. If you're building this image
-somewhere without that (e.g. an air-gapped target server), build it elsewhere and
-`docker save`/`load` or push/pull it instead.
+1. **Base checkpoint**: `hf download NeoteAI/n0-vtla-base --local-dir checkpoints/n0-vtla-base`
+2. **Stage-1 data**: raw ITW corpus at `<raw_root>/<date>/<episode_uuid>/` with
+   `left_hand_data.npz`, `right_hand_data.npz`, `rgb_head.{csv,mp4}`,
+   `wrist_left.{csv,mp4}`, `wrist_right.{csv,mp4}`, optional `task_info.json`. All
+   three camera CSVs must be real, present files — a missing view breaks the loader.
+3. **Stage-2 data**: a slice of `NeoteAIEmbodied/OpenNeoData` (HF, gated), downloaded
+   via `scripts/download_openneodata_flexiv_smoke.py` into canonical LeRobot-v3 layout,
+   plus `norm_stats.json` under `assets/vtla_stage2_align_expert/<asset_id>/`.
+4. **Post-train data**: a LeRobot-format robot dataset, plus `norm_stats.json` under
+   `assets/<config_name>/<asset_id>/`. Either your own (S3), or the ready-made wetlab
+   set on HF (see below).
 
-## Prerequisites (before `docker run`)
-
-1. **Pretrained base checkpoint** (not baked into the image — kept as a runtime mount
-   so the image isn't tied to one checkpoint version):
-   ```bash
-   hf download NeoteAI/n0-vtla-base --local-dir checkpoints/n0-vtla-base
-   ```
-
-2. **Stage-1 data** — your own raw ITW corpus, downloaded/unpacked from S3 into this
-   exact directory contract:
-   ```
-   <raw_root>/<date>/<episode_uuid>/
-     left_hand_data.npz       # timestamps + tactile_<pad> arrays
-     right_hand_data.npz
-     rgb_head.csv              # columns: frame_index, timestamp_s
-     wrist_left.csv
-     wrist_right.csv
-     rgb_head.mp4
-     wrist_left.mp4
-     wrist_right.mp4
-     task_info.json             # optional; falls back to "Perform the task."
-   ```
-   `<date>` can be any subdirectory name (it's just a partition, not parsed as a real
-   date) — `train_stage1_online.py` scans every `<date>` under `<raw_root>` unless
-   `VTLA_ITW_DATES` restricts it. **All three camera CSVs (`rgb_head`, `wrist_left`,
-   `wrist_right`) must be PRESENT as files for every episode** — `aligned_timeline`
-   (`scripts/itw_pressure.py`) opens all of `RGB_VIEWS` unconditionally per episode, so
-   a wholly-missing view's `.csv` raises immediately and the episode gets skipped (a
-   whole camera view being entirely absent from the rig is NOT the same case as a
-   per-frame invalid/placeholder reading within a present stream — only the latter is
-   tolerated, via per-frame masking). If your rig genuinely lacks one of these three
-   views, that's not supported by this loader as-is (confirmed on lab 2026-09-15
-   against single-wrist-camera robot data) — don't attempt to substitute a missing
-   view without addressing this in code first.
-
-3. **Stage-2 data** — a slice of `NeoteAIEmbodied/OpenNeoData` (HuggingFace, **gated,
-   not S3** — a different credential model than Stage-1/post-train's data, see the
-   Stage-2 section below), already in canonical LeRobot-v3 layout once downloaded via
-   `scripts/download_openneodata_flexiv_smoke.py`:
-   ```
-   <dataset_root>/
-     meta/info.json, meta/tasks.parquet, meta/episodes/chunk-000/file-000.parquet
-     data/chunk-000/file-000.parquet
-     videos/<view_key>/chunk-000/file-000.mp4
-   ```
-   Plus a precomputed `norm_stats.json` under `assets/vtla_stage2_align_expert/<asset_id>/`.
-
-4. **Post-train data** — a robot dataset in LeRobot format:
-   ```
-   <dataset_root>/
-     meta/info.json
-     meta/tasks.jsonl + meta/episodes.jsonl          # v2.1
-       (or meta/tasks.parquet + meta/episodes/        # v3)
-     data/chunk-000/episode_*.parquet
-     videos/chunk-000/<camera_key>/episode_*.mp4
-   ```
-   Plus a precomputed `norm_stats.json` under
-   `assets/<config_name>/<asset_id>/norm_stats.json` (default `config_name=
-   vtla_tactile_posttrain`, `asset_id=canonical_tactile_task` unless overridden).
-   This can be **your own S3-sourced dataset** (see "Simplest path" below), or the
-   **ready-made wetlab canonical dataset already on Hugging Face** — see "Run —
-   post-train" below for the latter; it needs no conversion, only a download.
-
-## Simplest path: have an S3 URI + AWS credentials, no local data yet
-
-The image bakes in `awscli` (never any credentials) specifically so this is a single
-command per stage — `scripts/docker/run_stage1.sh` / `run_posttrain.sh` `aws s3 sync`
-your data down, then launch the matching trainer:
-
-```bash
-# Stage-1
-docker run --rm --gpus=all \
-  -v ~/.aws:/root/.aws:ro -v $PWD/data:/data -v $PWD/checkpoints:/app/checkpoints \
-  -e VTLA_PRETRAINED_CHECKPOINT=/app/checkpoints/n0-vtla-base \
-  n0vtla_train bash scripts/docker/run_stage1.sh s3://bucket/prefix/itw_raw
-
-# Post-train
-docker run --rm --gpus=all \
-  -v ~/.aws:/root/.aws:ro -v $PWD/data:/data -v $PWD/checkpoints:/app/checkpoints \
-  -v $PWD/assets:/app/assets \
-  -e VTLA_PRETRAINED_CHECKPOINT=/app/checkpoints/n0-vtla-base \
-  -e VTLA_ASSET_ID=my_dataset \
-  n0vtla_train bash scripts/docker/run_posttrain.sh s3://bucket/prefix/robot_dataset
-```
-
-Still need the pretrained checkpoint first (`hf download NeoteAI/n0-vtla-base
---local-dir checkpoints/n0-vtla-base`, see below — separate from S3, it's public on
-HF) and, for post-train, your own `norm_stats.json` under `assets/vtla_tactile_posttrain/
-<asset_id>/` (not part of the raw dataset sync). Extra args after the `s3://...` pass
-straight through to `train_stage1.sh`/`train.sh` (e.g. `CHECK_ONLY=1`, `--resume`).
-
-## Run (data already local) — Stage-1
+## Run — Stage-1
 
 ```bash
 docker run --rm --gpus=all \
@@ -144,196 +44,105 @@ docker run --rm --gpus=all \
   -v /path/to/raw_itw_root:/data/itw_raw \
   -e VTLA_ITW_RAW_ROOT=/data/itw_raw \
   -e VTLA_PRETRAINED_CHECKPOINT=/app/checkpoints/n0-vtla-base \
-  -e NPROC_PER_NODE=8 \
   n0vtla_train bash train_stage1.sh
 ```
+`CHECK_ONLY=1` for preflight only. On a stable external server (no wall-time
+segmentation), bump checkpoint cadence: `--save-interval=5000` (CLI override only —
+the code default `500` stays as-is, shared with the live VISION training config).
 
-Preflight only (no training, just validates env/paths/checkpoint/DINOv2 cache):
-```bash
-docker run --rm --gpus=all -e CHECK_ONLY=1 ... n0vtla_train bash train_stage1.sh
-```
-
-`VTLA_ITW_NORMALIZATION` defaults to the committed
-`assets/itw_normalization/normalization_v10_pad30_per_task_scale.json` — override it
-only if you've fit your own table. Any task name not present in that table's
-`task_scale` silently falls back to its `default_scale` (no code change needed for new
-tasks — see `scripts/itw_pressure.py:normalize_pressure`).
-
-**Checkpoint cadence for an external/unmonitored server**: the code default
-(`save_interval=500`) is tuned for VISION's own 4h `sbatch` wall-time segments (so a
-segment that dies mid-run only re-does ≤500 steps on `--resume`) — it is a code default,
-not something to change for this image, because `vtla_stage1_predictor_pretrain` is the
-SAME config the live VISION training chain uses, and editing it here would change that
-run's resume behavior too. If you're running the full 20,000-step Stage-1 on a stable
-external server (no wall-time segmentation, nobody watching a live loss curve), pass a
-larger interval as a CLI override instead — it never touches the shared code default:
-```bash
-n0vtla_train bash train_stage1.sh --save-interval=5000
-```
+Or sync straight from S3 first: `n0vtla_train bash scripts/docker/run_stage1.sh
+s3://bucket/prefix/itw_raw` (needs `-v ~/.aws:/root/.aws:ro`).
 
 ## Run — Stage-2
 
-Stage-2's data source is **Hugging Face, not AWS S3** — a different credential model
-than Stage-1/post-train. Download a slice first (any of `flexiv`/`umi`/`arx5`/`ur`/
-`aloha`/`umi_single`/`arx5_single` — all 7 OpenNeoData platforms have tactile channels
-and work with the same canonical data config; see `scripts/download_openneodata_
-flexiv_smoke.py`'s module docstring for the full per-platform notes):
-
 ```bash
-docker run --rm \
-  -e HF_TOKEN=<your token, needs OpenNeoData gated-dataset access> \
-  -v $PWD/data:/data \
-  n0vtla_train python scripts/download_openneodata_flexiv_smoke.py \
-    --platform flexiv --output /data/openneodata_smoke --num-episodes 2
-```
+# 1. Download a slice (any OpenNeoData platform: flexiv/umi/arx5/ur/aloha/umi_single/arx5_single)
+docker run --rm -e HF_TOKEN=<token> -v $PWD/data:/data n0vtla_train \
+  python scripts/download_openneodata_flexiv_smoke.py --platform flexiv \
+  --output /data/openneodata_smoke --num-episodes 2
 
-Then compute norm stats for it (`VTLA_ASSET_ID` names this run for later reuse):
-```bash
-docker run --rm -v $PWD/data:/data -v $PWD/assets:/app/assets \
-  n0vtla_train python scripts/compute_canonical_norm.py \
-    --train-config-name vtla_stage2_align_expert \
-    --repo-id /data/openneodata_smoke --asset-id openneodata_smoke
-```
+# 2. Norm stats
+docker run --rm -v $PWD/data:/data -v $PWD/assets:/app/assets n0vtla_train \
+  python scripts/compute_canonical_norm.py --train-config-name vtla_stage2_align_expert \
+  --repo-id /data/openneodata_smoke --asset-id openneodata_smoke
 
-Then run Stage-2 itself, warm-starting from BOTH the base checkpoint AND Stage-1's own
-checkpoint (Stage-1's trainable-only output — either your own, e.g.
-`checkpoints/vtla_stage1_predictor_pretrain/<exp_name>/`, or one already on HF, e.g.
-`qqyang/zihiao_real_test:n0-vtla_ts_pretrain/<step>/`):
-
-```bash
+# 3. Train (warm-starts from base + Stage-1 checkpoint)
 docker run --rm --gpus=all \
   -v $PWD/checkpoints:/app/checkpoints -v $PWD/data:/data -v $PWD/assets:/app/assets \
   -e VTLA_PRETRAINED_CHECKPOINT=/app/checkpoints/n0-vtla-base \
   -e VTLA_STAGE1_CHECKPOINT=/app/checkpoints/vtla_stage1_predictor_pretrain/<exp_name> \
   -e VTLA_DATASET_PATH=/data/openneodata_smoke -e VTLA_ASSET_ID=openneodata_smoke \
-  -e NPROC_PER_NODE=8 \
   n0vtla_train bash train_stage2.sh
-```
 
-Same `CHECK_ONLY=1` pattern applies. Stage-2 saves a trainable-only checkpoint (same
-format as Stage-1's), NOT something post-train can load directly — merge it first:
-
-```bash
-# Step 3.5 -- explicit, not auto-chained after train_stage2.sh, so the pipeline stays
-# inspectable step by step. CPU-only, fast.
-docker run --rm -v $PWD/checkpoints:/app/checkpoints \
-  n0vtla_train python scripts/merge_stage2_checkpoint_for_posttrain.py \
-    --base-checkpoint /app/checkpoints/n0-vtla-base \
-    --stage1-checkpoint /app/checkpoints/vtla_stage1_predictor_pretrain/<exp_name> \
-    --stage2-checkpoint /app/checkpoints/vtla_stage2_align_expert/<exp_name> \
-    --output /app/checkpoints/merged_for_posttrain
+# 4. Merge before post-train (Stage-2 output is a delta, not a full checkpoint)
+docker run --rm -v $PWD/checkpoints:/app/checkpoints n0vtla_train \
+  python scripts/merge_stage2_checkpoint_for_posttrain.py \
+  --base-checkpoint /app/checkpoints/n0-vtla-base \
+  --stage1-checkpoint /app/checkpoints/vtla_stage1_predictor_pretrain/<exp_name> \
+  --stage2-checkpoint /app/checkpoints/vtla_stage2_align_expert/<exp_name> \
+  --output /app/checkpoints/merged_for_posttrain
 ```
-Point post-train's `VTLA_PRETRAINED_CHECKPOINT` at this merged output below, not at
-the original base checkpoint, to actually pick up the Stage-1+Stage-2 training.
 
 ## Run — post-train
 
 ```bash
 docker run --rm --gpus=all \
   -v $PWD/checkpoints:/app/checkpoints \
-  -v /path/to/lerobot_dataset:/data/robot_dataset \
-  -v $PWD/assets:/app/assets \
+  -v /path/to/lerobot_dataset:/data/robot_dataset -v $PWD/assets:/app/assets \
   -e VTLA_DATASET_PATH=/data/robot_dataset \
-  -e VTLA_PRETRAINED_CHECKPOINT=/app/checkpoints/n0-vtla-base \
-  -e NPROC_PER_NODE=8 \
+  -e VTLA_PRETRAINED_CHECKPOINT=/app/checkpoints/merged_for_posttrain \
   n0vtla_train bash train.sh
 ```
 
-Same `CHECK_ONLY=1` pattern applies. `VTLA_PRETRAINED_CHECKPOINT` should point at the
-Stage-2 merge output (`/app/checkpoints/merged_for_posttrain`, see the "Step 3.5" merge
-above) if you're running the full Stage-1 → Stage-2 → post-train chain, not the bare
-base checkpoint.
-
-### Ready-made wetlab dataset (no conversion needed)
-
-Rather than bringing your own S3 robot dataset, this project's own wetlab post-train
-data is already canonical and public on Hugging Face — download it directly (no
-transform script needed, unlike Stage-2's OpenNeoData, since it was already built by
-`scripts/build_wetlab_canonical_dataset.py` before upload):
-
+**Ready-made wetlab dataset** (no conversion needed, already canonical):
 ```bash
-docker run --rm -v $PWD/data:/data \
-  n0vtla_train hf download qqyang/zihiao_real_test --repo-type dataset \
-    --include "n0vtla_wetlab_canonical_v2/train/**" \
-    --local-dir /data
-# repeat --include "n0vtla_wetlab_canonical_v2/val/**" and ".../holdout/**" as needed
-# (val is unused by this image; holdout is for the offline eval step below)
+# download train + holdout splits
+docker run --rm -v $PWD/data:/data n0vtla_train hf download qqyang/zihiao_real_test \
+  --repo-type dataset --include "n0vtla_wetlab_canonical_v2/train/**" --local-dir /data
+# -> lands at /data/n0vtla_wetlab_canonical_v2/train ; repeat --include for .../holdout/**
+
+# norm stats (train split only)
+docker run --rm -v $PWD/data:/data -v $PWD/assets:/app/assets n0vtla_train \
+  python scripts/compute_canonical_norm.py --train-config-name vtla_tactile_posttrain \
+  --robot aloha --repo-id /data/n0vtla_wetlab_canonical_v2/train --asset-id wetlab_v2_train
+# then train.sh with VTLA_DATASET_PATH=/data/n0vtla_wetlab_canonical_v2/train, VTLA_ASSET_ID=wetlab_v2_train
 ```
 
-This lands at `/data/n0vtla_wetlab_canonical_v2/train` (HF preserves the repo-relative
-path under `--local-dir`) — point `VTLA_DATASET_PATH` there. Compute norm stats against
-the **train** split only (never val/holdout — see `docs/ROBOT_POSTTRAIN_QUICKSTART.md`
-for why the three splits are physically separate directories, not one tagged directory):
-
-```bash
-docker run --rm -v $PWD/data:/data -v $PWD/assets:/app/assets \
-  n0vtla_train python scripts/compute_canonical_norm.py \
-    --train-config-name vtla_tactile_posttrain --robot aloha \
-    --repo-id /data/n0vtla_wetlab_canonical_v2/train --asset-id wetlab_v2_train
-```
-
-Then run post-train with `VTLA_DATASET_PATH=/data/n0vtla_wetlab_canonical_v2/train` and
-`VTLA_ASSET_ID=wetlab_v2_train`.
-
-**Offline ship-gate eval** (sanity check before any real-robot use — see
-`scripts/eval_wetlab_ship_gate.py`'s module docstring for what this is and isn't):
+**Offline ship-gate eval** (noise-vs-signal sanity check, not an accuracy eval — pass
+the SAME `VTLA_ASSET_ID` used in training, or it resolves norm stats under the wrong name):
 ```bash
 docker run --rm --gpus=all -v $PWD/checkpoints:/app/checkpoints -v $PWD/data:/data \
-  -v $PWD/assets:/app/assets \
-  n0vtla_train python scripts/eval_wetlab_ship_gate.py \
-    --config vtla_tactile_posttrain \
-    --checkpoint /app/checkpoints/vtla_tactile_posttrain/<exp_name>/<step> \
-    --dataset-root /data/n0vtla_wetlab_canonical_v2/holdout \
-    --output /app/checkpoints/ship_gate_<step>.json
+  -v $PWD/assets:/app/assets -e VTLA_ASSET_ID=wetlab_v2_train n0vtla_train \
+  python scripts/eval_wetlab_ship_gate.py --config vtla_tactile_posttrain \
+  --checkpoint /app/checkpoints/vtla_tactile_posttrain/<exp_name>/<step> \
+  --dataset-root /data/n0vtla_wetlab_canonical_v2/holdout \
+  --output /app/checkpoints/ship_gate_<step>.json
 ```
-This is a noise-vs-signal pre-flight, not an accuracy/success eval — it only says the
-checkpoint predicts demonstration-scale, non-oscillating motion. See the reference
-numbers and verdict thresholds in the script's own docstring.
 
 ## Env var reference
 
-| Var | Stage-1 | Stage-2 | Post-train | Required | Default |
-|---|:-:|:-:|:-:|:-:|---|
-| `VTLA_ITW_RAW_ROOT` | yes | — | — | yes (Stage-1) | none |
-| `VTLA_ITW_NORMALIZATION` | yes | — | — | no | committed `assets/itw_normalization/...json` |
-| `VTLA_ITW_DATES` | yes | — | — | no | every date under `VTLA_ITW_RAW_ROOT` |
-| `VTLA_ITW_MAX_EPISODES` | yes | — | — | no | all (smoke-test cap only) |
-| `VTLA_STAGE1_FUTURE_OFFSET` | yes | — | — | no | 50 |
-| `VTLA_STAGE1_RECON_GRID` / `_LAMBDA_REC` / `_TEMPERATURE` | yes | — | — | no | 8 / 0.5 / 1.0 |
-| `VTLA_STAGE1_CHECKPOINT` | — | yes | — | yes (Stage-2) | none |
-| `VTLA_DATASET_PATH` | — | yes | yes | yes (Stage-2/post-train) | none |
-| `VTLA_ASSET_ID` | — | yes | yes | yes (Stage-2) / no (post-train) | `canonical_tactile_task` (post-train only) |
-| `VTLA_PRETRAINED_CHECKPOINT` | yes | yes | yes | yes | none |
-| `VTLA_DEFAULT_PROMPT` | yes | — | yes | no | `"Perform the task."`/`"do the task"` |
-| `HF_TOKEN` | — | yes (download step) | optional (only if using the ready-made wetlab dataset) | yes for OpenNeoData (gated) | none |
-| `CONFIG_NAME` | `vtla_stage1_predictor_pretrain` | `vtla_stage2_align_expert` | `vtla_tactile_posttrain` | — | per-script |
-| `EXP_NAME` | `stage1_online` | `stage2_align` | `tactile_posttrain` | no | per-script |
-| `NPROC_PER_NODE` | yes | yes | yes | no | 8 |
-| `CHECK_ONLY` | yes | yes | yes | no | 0 |
+| Var | Stage-1 | Stage-2 | Post-train | Default |
+|---|:-:|:-:|:-:|---|
+| `VTLA_ITW_RAW_ROOT` | yes | — | — | none |
+| `VTLA_ITW_NORMALIZATION` | optional | — | — | committed asset |
+| `VTLA_STAGE1_CHECKPOINT` | — | yes | — | none |
+| `VTLA_DATASET_PATH` | — | yes | yes | none |
+| `VTLA_ASSET_ID` | — | yes | yes (else default id) | `canonical_tactile_task` |
+| `VTLA_PRETRAINED_CHECKPOINT` | yes | yes | yes | none |
+| `HF_TOKEN` | — | yes | optional | none |
+| `CONFIG_NAME` / `EXP_NAME` | per-script defaults | | | |
+| `NPROC_PER_NODE` | 8 | 8 | 8 | 8 |
+| `CHECK_ONLY` | preflight-only if `1` | | | `0` |
 
 ## Troubleshooting
 
-- **`Could not load libtorchcodec` / FFmpeg errors** — Stage-1's `.mp4` decoding
-  (`torchcodec`) needs FFmpeg's shared libs; this image installs `ffmpeg<8` via
-  conda-forge into the `vtla` env at build time. If you built a custom variant of this
-  Dockerfile without that step, this is the first thing to check.
-- **DINOv2 offline-cache miss at runtime** despite it being baked in at build time —
-  almost always an `HF_HOME` mismatch: the bake step used `HF_HOME=/opt/hf_cache`
-  (baked into the image via `ENV`); don't override `HF_HOME` at `docker run` time
-  unless you're also re-priming the cache there.
-- **`cv2` import errors** — `requirements.txt` pins both `opencv-python` and
-  `opencv-python-headless`; if their install order ever produces a broken `cv2`,
-  that's the first place to look (not something this Dockerfile works around).
-- **`RuntimeError: A full epoch had no valid future tactile targets...`** — a
-  correctness guard, not a flaky error: it means every batch in an epoch failed
-  Stage-1's alignment/QC gate. Check your raw data actually matches the directory
-  contract above (especially per-view CSV timestamp columns) before assuming it's a
-  code bug.
+- **`Could not load libtorchcodec`** — FFmpeg shared libs; baked in via conda-forge.
+- **DINOv2 cache miss** — don't override `HF_HOME` unless re-priming the bake-time cache.
+- **`cv2` import errors** — check `opencv-python`/`opencv-python-headless` install order.
+- **"A full epoch had no valid future tactile targets"** — real QC-gate failure; check
+  your raw data matches the Stage-1 directory contract, not a code bug.
 
 ## Non-goals
 
-- Downloading or preparing data from S3/HuggingFace is the operator's job — this image
-  assumes data is already unpacked locally in the layouts above (Stage-1, or post-train
-  if bringing your own dataset) or produced by a download step (Stage-2's script, or
-  post-train's ready-made wetlab `hf download`, both documented above).
-- Stage-3 packaging (separate branch, not ready yet).
+- Downloading/preparing data is the operator's job (or use the download scripts above).
+- Stage-3 packaging (separate branch, not ready).
