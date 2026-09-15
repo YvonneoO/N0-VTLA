@@ -67,9 +67,16 @@ somewhere without that (e.g. an air-gapped target server), build it elsewhere an
    ```
    `<date>` can be any subdirectory name (it's just a partition, not parsed as a real
    date) — `train_stage1_online.py` scans every `<date>` under `<raw_root>` unless
-   `VTLA_ITW_DATES` restricts it. Missing `wrist_left`/`wrist_right` views are
-   tolerated (per-view masking), but at least `rgb_head` + one hand's tactile data is
-   needed for a usable episode.
+   `VTLA_ITW_DATES` restricts it. **All three camera CSVs (`rgb_head`, `wrist_left`,
+   `wrist_right`) must be PRESENT as files for every episode** — `aligned_timeline`
+   (`scripts/itw_pressure.py`) opens all of `RGB_VIEWS` unconditionally per episode, so
+   a wholly-missing view's `.csv` raises immediately and the episode gets skipped (a
+   whole camera view being entirely absent from the rig is NOT the same case as a
+   per-frame invalid/placeholder reading within a present stream — only the latter is
+   tolerated, via per-frame masking). If your rig genuinely lacks one of these three
+   views, that's not supported by this loader as-is (confirmed on lab 2026-09-15
+   against single-wrist-camera robot data) — don't attempt to substitute a missing
+   view without addressing this in code first.
 
 3. **Post-train data** — your own robot dataset in LeRobot format:
    ```

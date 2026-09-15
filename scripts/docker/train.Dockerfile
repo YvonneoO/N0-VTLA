@@ -60,6 +60,23 @@ ENV PYTHONPATH=/app
 RUN /opt/conda/bin/conda install -y -n vtla -c conda-forge "ffmpeg<8" \
     && /opt/conda/bin/conda clean -afy
 
+# requirements.txt pins a bare `torch==2.7.1` (no CUDA-variant suffix), which PyPI's
+# default index resolves to a cu126-class wheel -- that only supports up to sm_90 and
+# hard-fails ("no kernel image is available for execution on the device") on newer
+# GPUs (confirmed on lab's RTX PRO 6000 Blackwell, sm_120, 2026-09-15; matches this
+# project's own established convention that ANY pip-installed torch on Blackwell needs
+# a cu128+ wheel -- VISION's env already does this). Install the matching torch/
+# torchvision/torchcodec triplet from PyTorch's own cu128 wheel index FIRST, so the
+# later `pip install -r requirements.txt` sees an already-satisfied exact-version pin
+# and leaves it alone rather than reinstalling a PyPI-default (cu126) build over it.
+# cu128 wheels remain compatible with older (Ampere/Hopper) architectures too given a
+# reasonably current driver, so this is a safe default, not Blackwell-only -- override
+# via --build-arg TORCH_INDEX_URL=... only if a target truly needs something older.
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install torch==2.7.1 torchvision==0.22.1 torchcodec==0.5 \
+        --index-url "$TORCH_INDEX_URL"
+
 COPY requirements.txt /tmp/requirements.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
     GIT_LFS_SKIP_SMUDGE=1 python -m pip install -r /tmp/requirements.txt
@@ -102,4 +119,10 @@ RUN HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 python -c \
 COPY . /app
 RUN python -m pip install -e . --no-deps
 
-ENTRYPOINT ["/bin/bash"]
+# No ENTRYPOINT on purpose: every documented invocation (scripts/docker/README.md,
+# run_stage1.sh, run_posttrain.sh) already passes a full command, e.g.
+# `docker run ... n0vtla_train bash train_stage1.sh`. An `ENTRYPOINT ["/bin/bash"]`
+# here would make Docker exec `/bin/bash bash train_stage1.sh` for that exact command
+# -- bash resolves the literal arg `bash` via PATH to the real `/usr/bin/bash` binary
+# and tries to source IT as a script, failing with a confusing "cannot execute binary
+# file" (hit on lab 2026-09-15, initially looked like image corruption, wasn't).
