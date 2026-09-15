@@ -12,24 +12,23 @@ updates without a rebuild.
 ## Quickest path: start at Stage-2 (skip Stage-1)
 
 We already trained Stage-1 to 14,000 steps and published it on HF, so you don't need
-to run Stage-1 yourself — just pull the image and run two scripts:
+to run Stage-1 yourself — two scripts, two commands:
 
 ```bash
-docker pull qqyang/n0vtla_train:latest
-docker run --rm --gpus=all -it \
-  -v $PWD/data:/app/data -v $PWD/checkpoints:/app/checkpoints -v $PWD/assets:/app/assets \
-  -e HF_TOKEN=<your token, needs OpenNeoData gated-dataset access> \
-  qqyang/n0vtla_train:latest bash
-
-# inside the container:
-bash scripts/docker/setup_stage2_prereqs.sh   # downloads base + our Stage-1 ckpt + data
-bash scripts/docker/run_stage2_onward.sh      # Stage-2 -> merge -> post-train
+bash scripts/docker/open_container.sh   # pulls the image, opens a shell inside it
+bash scripts/docker/quickstart.sh       # downloads prereqs, runs Stage-2 -> merge -> post-train
 ```
-Both scripts accept env var overrides (`STAGE1_STEP`, `OPENNEODATA_PLATFORM`,
-`EXP_NAME_STAGE2`, etc. — see each script's top) and pass extra args straight through
-to the underlying `train_*.sh` (e.g. `CHECK_ONLY=1`, `--num-train-steps=5` for a smoke
-test first). See "Run — Stage-2" / "Run — post-train" below for what each step does
-individually, and the env var reference table for every knob.
+
+`open_container.sh` runs on YOUR machine (get it from this repo, or from whoever sent
+you this README) — **edit the four placeholder values at its top** (`DATA_DIR`,
+`CHECKPOINTS_DIR`, `ASSETS_DIR`, `HF_TOKEN`) to real local paths / your HF token before
+running it. `quickstart.sh` runs once you're inside the container; both it and the two
+scripts it chains (`setup_stage2_prereqs.sh`, `run_stage2_onward.sh`) accept env var
+overrides (`STAGE1_STEP`, `OPENNEODATA_PLATFORM`, `EXP_NAME_STAGE2`, etc. — see each
+script's top) and pass extra args straight through to the underlying `train_*.sh` (e.g.
+`--num-train-steps=5` for a smoke test first). See "Run — Stage-2" / "Run — post-train"
+below for what each step does individually, and the env var reference table for every
+knob.
 
 ## Build
 
