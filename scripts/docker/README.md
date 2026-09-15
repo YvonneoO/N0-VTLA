@@ -92,7 +92,7 @@ somewhere without that (e.g. an air-gapped target server), build it elsewhere an
    ```
    Plus a precomputed `norm_stats.json` under `assets/vtla_stage2_align_expert/<asset_id>/`.
 
-4. **Post-train data** — your own robot dataset in LeRobot format:
+4. **Post-train data** — a robot dataset in LeRobot format:
    ```
    <dataset_root>/
      meta/info.json
@@ -104,6 +104,9 @@ somewhere without that (e.g. an air-gapped target server), build it elsewhere an
    Plus a precomputed `norm_stats.json` under
    `assets/<config_name>/<asset_id>/norm_stats.json` (default `config_name=
    vtla_tactile_posttrain`, `asset_id=canonical_tactile_task` unless overridden).
+   This can be **your own S3-sourced dataset** (see "Simplest path" below), or the
+   **ready-made wetlab canonical dataset already on Hugging Face** — see "Run —
+   post-train" below for the latter; it needs no conversion, only a download.
 
 ## Simplest path: have an S3 URI + AWS credentials, no local data yet
 
@@ -155,6 +158,18 @@ docker run --rm --gpus=all -e CHECK_ONLY=1 ... n0vtla_train bash train_stage1.sh
 only if you've fit your own table. Any task name not present in that table's
 `task_scale` silently falls back to its `default_scale` (no code change needed for new
 tasks — see `scripts/itw_pressure.py:normalize_pressure`).
+
+**Checkpoint cadence for an external/unmonitored server**: the code default
+(`save_interval=500`) is tuned for VISION's own 4h `sbatch` wall-time segments (so a
+segment that dies mid-run only re-does ≤500 steps on `--resume`) — it is a code default,
+not something to change for this image, because `vtla_stage1_predictor_pretrain` is the
+SAME config the live VISION training chain uses, and editing it here would change that
+run's resume behavior too. If you're running the full 20,000-step Stage-1 on a stable
+external server (no wall-time segmentation, nobody watching a live loss curve), pass a
+larger interval as a CLI override instead — it never touches the shared code default:
+```bash
+n0vtla_train bash train_stage1.sh --save-interval=5000
+```
 
 ## Run — Stage-2
 
@@ -224,7 +239,56 @@ docker run --rm --gpus=all \
   n0vtla_train bash train.sh
 ```
 
-Same `CHECK_ONLY=1` pattern applies.
+Same `CHECK_ONLY=1` pattern applies. `VTLA_PRETRAINED_CHECKPOINT` should point at the
+Stage-2 merge output (`/app/checkpoints/merged_for_posttrain`, see the "Step 3.5" merge
+above) if you're running the full Stage-1 → Stage-2 → post-train chain, not the bare
+base checkpoint.
+
+### Ready-made wetlab dataset (no conversion needed)
+
+Rather than bringing your own S3 robot dataset, this project's own wetlab post-train
+data is already canonical and public on Hugging Face — download it directly (no
+transform script needed, unlike Stage-2's OpenNeoData, since it was already built by
+`scripts/build_wetlab_canonical_dataset.py` before upload):
+
+```bash
+docker run --rm -v $PWD/data:/data \
+  n0vtla_train hf download qqyang/zihiao_real_test --repo-type dataset \
+    --include "n0vtla_wetlab_canonical_v2/train/**" \
+    --local-dir /data
+# repeat --include "n0vtla_wetlab_canonical_v2/val/**" and ".../holdout/**" as needed
+# (val is unused by this image; holdout is for the offline eval step below)
+```
+
+This lands at `/data/n0vtla_wetlab_canonical_v2/train` (HF preserves the repo-relative
+path under `--local-dir`) — point `VTLA_DATASET_PATH` there. Compute norm stats against
+the **train** split only (never val/holdout — see `docs/ROBOT_POSTTRAIN_QUICKSTART.md`
+for why the three splits are physically separate directories, not one tagged directory):
+
+```bash
+docker run --rm -v $PWD/data:/data -v $PWD/assets:/app/assets \
+  n0vtla_train python scripts/compute_canonical_norm.py \
+    --train-config-name vtla_tactile_posttrain --robot aloha \
+    --repo-id /data/n0vtla_wetlab_canonical_v2/train --asset-id wetlab_v2_train
+```
+
+Then run post-train with `VTLA_DATASET_PATH=/data/n0vtla_wetlab_canonical_v2/train` and
+`VTLA_ASSET_ID=wetlab_v2_train`.
+
+**Offline ship-gate eval** (sanity check before any real-robot use — see
+`scripts/eval_wetlab_ship_gate.py`'s module docstring for what this is and isn't):
+```bash
+docker run --rm --gpus=all -v $PWD/checkpoints:/app/checkpoints -v $PWD/data:/data \
+  -v $PWD/assets:/app/assets \
+  n0vtla_train python scripts/eval_wetlab_ship_gate.py \
+    --config vtla_tactile_posttrain \
+    --checkpoint /app/checkpoints/vtla_tactile_posttrain/<exp_name>/<step> \
+    --dataset-root /data/n0vtla_wetlab_canonical_v2/holdout \
+    --output /app/checkpoints/ship_gate_<step>.json
+```
+This is a noise-vs-signal pre-flight, not an accuracy/success eval — it only says the
+checkpoint predicts demonstration-scale, non-oscillating motion. See the reference
+numbers and verdict thresholds in the script's own docstring.
 
 ## Env var reference
 
@@ -241,7 +305,7 @@ Same `CHECK_ONLY=1` pattern applies.
 | `VTLA_ASSET_ID` | — | yes | yes | yes (Stage-2) / no (post-train) | `canonical_tactile_task` (post-train only) |
 | `VTLA_PRETRAINED_CHECKPOINT` | yes | yes | yes | yes | none |
 | `VTLA_DEFAULT_PROMPT` | yes | — | yes | no | `"Perform the task."`/`"do the task"` |
-| `HF_TOKEN` | — | yes (download step) | — | yes for OpenNeoData | none |
+| `HF_TOKEN` | — | yes (download step) | optional (only if using the ready-made wetlab dataset) | yes for OpenNeoData (gated) | none |
 | `CONFIG_NAME` | `vtla_stage1_predictor_pretrain` | `vtla_stage2_align_expert` | `vtla_tactile_posttrain` | — | per-script |
 | `EXP_NAME` | `stage1_online` | `stage2_align` | `tactile_posttrain` | no | per-script |
 | `NPROC_PER_NODE` | yes | yes | yes | no | 8 |
@@ -269,6 +333,7 @@ Same `CHECK_ONLY=1` pattern applies.
 ## Non-goals
 
 - Downloading or preparing data from S3/HuggingFace is the operator's job — this image
-  assumes data is already unpacked locally in the layouts above (Stage-1/post-train)
-  or produced by the download script (Stage-2).
+  assumes data is already unpacked locally in the layouts above (Stage-1, or post-train
+  if bringing your own dataset) or produced by a download step (Stage-2's script, or
+  post-train's ready-made wetlab `hf download`, both documented above).
 - Stage-3 packaging (separate branch, not ready yet).
