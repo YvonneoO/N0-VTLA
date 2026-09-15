@@ -65,17 +65,6 @@ import torch.nn as nn
 import torch.nn.parallel
 import tqdm
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from train_pytorch import (  # noqa: E402
-    get_latest_checkpoint_step,
-    init_logging,
-    init_wandb,
-    set_seed,
-    setup_ddp,
-    wait_for_path_state,
-)
-from train_stage1_predictor import load_stage1_policy_weights  # noqa: E402
-
 # The n0vtla package is installed editable, pinned to a fixed on-disk path (the main repo
 # checkout) at env-creation time. When this script runs from an isolated `git worktree` (as it
 # must, to avoid touching the main checkout while another training chain reads/writes it -- see
@@ -86,9 +75,22 @@ from train_stage1_predictor import load_stage1_policy_weights  # noqa: E402
 # missing this script's own vtla_stage2_align_expert config entry (added only on this branch),
 # which surfaces as tyro reporting "vtla_stage2_align_expert" as an unrecognized subcommand even
 # though it's plainly defined in n0vtla/training/config.py -- confusing unless you know to check
-# `n0vtla.__file__`. Force the worktree root onto sys.path ahead of the stale editable install so
-# every n0vtla submodule below resolves to this worktree's own code.
+# `n0vtla.__file__`. Force the worktree root onto sys.path ahead of the stale editable install,
+# BEFORE importing train_pytorch/train_stage1_predictor below -- both of those themselves import
+# n0vtla at module level, which would cache the stale module in sys.modules first (import
+# caching means a later sys.path fix has no effect once a module is already imported) if this
+# insert came after them.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from train_pytorch import (  # noqa: E402
+    get_latest_checkpoint_step,
+    init_logging,
+    init_wandb,
+    set_seed,
+    setup_ddp,
+    wait_for_path_state,
+)
+from train_stage1_predictor import load_stage1_policy_weights  # noqa: E402
 
 import n0vtla.training.config as _config  # noqa: E402
 import n0vtla.training.data_loader as _data  # noqa: E402
