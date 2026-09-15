@@ -33,9 +33,5 @@ VTLA_ASSET_ID="wetlab_v2_train" \
 EXP_NAME="$EXP_NAME_POSTTRAIN" \
   bash train.sh "$@"
 
-echo "done. Offline eval (optional, needs the SAME VTLA_ASSET_ID as post-train):"
-echo "  VTLA_ASSET_ID=wetlab_v2_train python scripts/eval_wetlab_ship_gate.py \\"
-echo "    --config vtla_tactile_posttrain \\"
-echo "    --checkpoint checkpoints/vtla_tactile_posttrain/$EXP_NAME_POSTTRAIN/<step> \\"
-echo "    --dataset-root data/n0vtla_wetlab_canonical_v2/holdout \\"
-echo "    --output checkpoints/ship_gate.json"
+echo "done. Final checkpoint: checkpoints/vtla_tactile_posttrain/$EXP_NAME_POSTTRAIN/ on your host"
+echo "(via the CHECKPOINTS_DIR you set in open_container.sh) -- send this directory back to us."
