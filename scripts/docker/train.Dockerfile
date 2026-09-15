@@ -67,6 +67,13 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # `cv2` import ever breaks post-install, check for a conflict between these two here
 # first (not fixed in this Dockerfile; the pins are deliberate upstream, not touched).
 
+# awscli: lets scripts/docker/run_stage1.sh / run_posttrain.sh pull an operator's own
+# S3 data with nothing else installed on the host besides the image + their AWS
+# credentials (mounted in at `docker run` time, e.g. `-v ~/.aws:/root/.aws:ro`) -- this
+# image never bakes in any credentials itself.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install awscli
+
 # Copy transformers_replace files while preserving directory structure (MANDATORY --
 # n0vtla depends on a patched transformers, not the stock pip package).
 COPY n0vtla/models_pytorch/transformers_replace/ /tmp/transformers_replace/
@@ -87,6 +94,11 @@ RUN HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 python -c \
 # compose.yml's serving setup) -- runtime data (raw itw episodes, LeRobot dataset,
 # pretrained checkpoint) stays mounted as volumes; only the code+deps are baked in.
 # The committed assets/itw_normalization/ JSON comes along automatically here.
+# `.git/` is deliberately NOT excluded by .dockerignore (unlike other build-context
+# trimming there) specifically so this COPY brings in a real, remote-configured git
+# checkout -- an operator can `git pull` inside a running container to pick up a code
+# update without rebuilding the whole image (requires network + read access to the
+# repo at pull time, same as any other git pull).
 COPY . /app
 RUN python -m pip install -e . --no-deps
 

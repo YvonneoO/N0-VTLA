@@ -7,4 +7,8 @@ assets/*
 checkpoints/
 logs/
 models/
-.git/
+# .git/ is intentionally NOT excluded (unlike a typical .dockerignore) -- the image
+# ships a real git checkout on purpose so `git pull` works inside a running container
+# for a future code update without a full rebuild. Build FROM A CLEAN CHECKOUT (a
+# fresh `git clone`, not a dirty local working tree) so what ships is exactly what's
+# on the remote, not stray uncommitted local changes.

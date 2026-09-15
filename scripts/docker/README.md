@@ -11,6 +11,13 @@ included** — that work is still in progress on a separate branch.
 Downloading/preparing your own data (from AWS S3 or elsewhere) is entirely your own
 responsibility. This image and the code inside it need nothing beyond: the image
 itself, a pretrained checkpoint, and your data in the layouts documented below.
+`awscli` is baked in for exactly this (see "Simplest path" below) — no credentials are
+ever baked in, only the CLI tool.
+
+The image ships a real, remote-configured `git` checkout (not a stripped-down copy),
+so `git pull` inside a running container picks up a code update without a full
+rebuild: `docker run --rm ... n0vtla_train bash -lc "git pull && ..."` (needs network +
+repo read access at pull time, same as any other `git pull`).
 
 ## Build
 
@@ -77,7 +84,35 @@ somewhere without that (e.g. an air-gapped target server), build it elsewhere an
    `assets/<config_name>/<asset_id>/norm_stats.json` (default `config_name=
    vtla_tactile_posttrain`, `asset_id=canonical_tactile_task` unless overridden).
 
-## Run — Stage-1
+## Simplest path: have an S3 URI + AWS credentials, no local data yet
+
+The image bakes in `awscli` (never any credentials) specifically so this is a single
+command per stage — `scripts/docker/run_stage1.sh` / `run_posttrain.sh` `aws s3 sync`
+your data down, then launch the matching trainer:
+
+```bash
+# Stage-1
+docker run --rm --gpus=all \
+  -v ~/.aws:/root/.aws:ro -v $PWD/data:/data -v $PWD/checkpoints:/app/checkpoints \
+  -e VTLA_PRETRAINED_CHECKPOINT=/app/checkpoints/n0-vtla-base \
+  n0vtla_train bash scripts/docker/run_stage1.sh s3://bucket/prefix/itw_raw
+
+# Post-train
+docker run --rm --gpus=all \
+  -v ~/.aws:/root/.aws:ro -v $PWD/data:/data -v $PWD/checkpoints:/app/checkpoints \
+  -v $PWD/assets:/app/assets \
+  -e VTLA_PRETRAINED_CHECKPOINT=/app/checkpoints/n0-vtla-base \
+  -e VTLA_ASSET_ID=my_dataset \
+  n0vtla_train bash scripts/docker/run_posttrain.sh s3://bucket/prefix/robot_dataset
+```
+
+Still need the pretrained checkpoint first (`hf download NeoteAI/n0-vtla-base
+--local-dir checkpoints/n0-vtla-base`, see below — separate from S3, it's public on
+HF) and, for post-train, your own `norm_stats.json` under `assets/vtla_tactile_posttrain/
+<asset_id>/` (not part of the raw dataset sync). Extra args after the `s3://...` pass
+straight through to `train_stage1.sh`/`train.sh` (e.g. `CHECK_ONLY=1`, `--resume`).
+
+## Run (data already local) — Stage-1
 
 ```bash
 docker run --rm --gpus=all \
