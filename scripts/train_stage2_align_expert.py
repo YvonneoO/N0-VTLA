@@ -76,6 +76,20 @@ from train_pytorch import (  # noqa: E402
 )
 from train_stage1_predictor import load_stage1_policy_weights  # noqa: E402
 
+# The n0vtla package is installed editable, pinned to a fixed on-disk path (the main repo
+# checkout) at env-creation time. When this script runs from an isolated `git worktree` (as it
+# must, to avoid touching the main checkout while another training chain reads/writes it -- see
+# this project's Stage-2 worktree workflow), a bare `import n0vtla` run as a *script* (not `-c`,
+# where sys.path[0] would be cwd) resolves sys.path[0] to this file's own directory (scripts/),
+# NOT the worktree root -- so it silently falls through to the editable install and imports the
+# STALE, main-checkout copy of n0vtla instead of this worktree's own copy. That stale copy is
+# missing this script's own vtla_stage2_align_expert config entry (added only on this branch),
+# which surfaces as tyro reporting "vtla_stage2_align_expert" as an unrecognized subcommand even
+# though it's plainly defined in n0vtla/training/config.py -- confusing unless you know to check
+# `n0vtla.__file__`. Force the worktree root onto sys.path ahead of the stale editable install so
+# every n0vtla submodule below resolves to this worktree's own code.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import n0vtla.training.config as _config  # noqa: E402
 import n0vtla.training.data_loader as _data  # noqa: E402
 from n0vtla.models_pytorch.n0vtla_policy import N0VTLAPolicy  # noqa: E402
