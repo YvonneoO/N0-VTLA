@@ -60,29 +60,38 @@ ENV PYTHONPATH=/app
 RUN /opt/conda/bin/conda install -y -n vtla -c conda-forge "ffmpeg<8" \
     && /opt/conda/bin/conda clean -afy
 
-# requirements.txt pins a bare `torch==2.7.1` (no CUDA-variant suffix), which PyPI's
-# default index resolves to a cu126-class wheel -- that only supports up to sm_90 and
-# hard-fails ("no kernel image is available for execution on the device") on newer
-# GPUs (confirmed on lab's RTX PRO 6000 Blackwell, sm_120, 2026-09-15; matches this
-# project's own established convention that ANY pip-installed torch on Blackwell needs
-# a cu128+ wheel -- VISION's env already does this). Install the matching torch/
-# torchvision/torchcodec triplet from PyTorch's own cu128 wheel index FIRST, so the
-# later `pip install -r requirements.txt` sees an already-satisfied exact-version pin
-# and leaves it alone rather than reinstalling a PyPI-default (cu126) build over it.
-# cu128 wheels remain compatible with older (Ampere/Hopper) architectures too given a
-# reasonably current driver, so this is a safe default, not Blackwell-only -- override
-# via --build-arg TORCH_INDEX_URL=... only if a target truly needs something older.
-ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
-RUN --mount=type=cache,target=/root/.cache/pip \
-    python -m pip install torch==2.7.1 torchvision==0.22.1 torchcodec==0.5 \
-        --index-url "$TORCH_INDEX_URL"
-
 COPY requirements.txt /tmp/requirements.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
     GIT_LFS_SKIP_SMUDGE=1 python -m pip install -r /tmp/requirements.txt
 # Note: requirements.txt pins BOTH opencv-python and opencv-python-headless -- if a
 # `cv2` import ever breaks post-install, check for a conflict between these two here
 # first (not fixed in this Dockerfile; the pins are deliberate upstream, not touched).
+
+# requirements.txt pins a bare `torch==2.7.1` (no CUDA-variant suffix), which PyPI's
+# default index resolves to a cu126-class wheel -- that only supports up to sm_90 and
+# hard-fails ("no kernel image is available for execution on the device") on newer
+# GPUs (confirmed on lab's RTX PRO 6000 Blackwell, sm_120, 2026-09-15; matches this
+# project's own established convention that ANY pip-installed torch on Blackwell needs
+# a cu128+ wheel -- VISION's env already does this).
+#
+# This MUST run AFTER `pip install -r requirements.txt`, not before: an earlier attempt
+# pre-installed cu128 torch first, expecting the later requirements.txt install to see
+# an already-satisfied exact-version pin and leave it alone -- instead, `lerobot`'s own
+# (unconstrained) transitive `torch` dependency made pip silently UNINSTALL the cu128
+# build and reinstall plain cu126 from PyPI mid-resolution (confirmed in the build log:
+# "Found existing installation: torch 2.7.1+cu128 / Uninstalling... / Successfully
+# installed ... torch-2.7.1"). Reinstalling cu128 LAST, with --force-reinstall --no-deps
+# (skip re-pulling torch's own already-satisfied deps like numpy), guarantees the final
+# image state regardless of what requirements.txt's resolution did in between. cu128
+# wheels remain compatible with older (Ampere/Hopper) architectures too given a
+# reasonably current driver, so this is a safe default, not Blackwell-only -- override
+# via --build-arg TORCH_INDEX_URL=... only if a target truly needs something older.
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install --force-reinstall --no-deps \
+        torch==2.7.1 torchvision==0.22.1 torchcodec==0.5 \
+        --index-url "$TORCH_INDEX_URL" \
+    && python -c "import torch; assert torch.version.cuda and torch.version.cuda.startswith('12.8'), torch.version.cuda"
 
 # awscli: lets scripts/docker/run_stage1.sh / run_posttrain.sh pull an operator's own
 # S3 data with nothing else installed on the host besides the image + their AWS
