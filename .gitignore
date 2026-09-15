@@ -48,7 +48,15 @@ credentials*.json
 # Anchored to the repo root so source packages like src/n0vtla/models/ stay tracked.
 /data/
 /datasets/
-/assets/
+# `/assets/*` (not `/assets/`) deliberately: a plain directory-exclude prunes git's
+# traversal entirely, so a negation for anything below it is silently ineffective --
+# the wildcard excludes each top-level entry individually instead, which negation CAN
+# override. Exception: a small, self-contained, committed normalization manifest (no
+# real data, just normal_baseline/normal_scale/task_scale float tables) shipped as a
+# Docker asset for train_stage1.sh's default VTLA_ITW_NORMALIZATION -- distinct from
+# the runtime-generated `assets/<config.name>/<asset_id>/...` trees this rule protects.
+/assets/*
+!/assets/itw_normalization/
 /pretrained/
 /models/
 /outputs/

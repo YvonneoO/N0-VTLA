@@ -1,0 +1,10 @@
+# Keep the training image's build context small and reproducible -- avoid baking in
+# stray local artifacts from a dirty working tree (checkpoints, logs, model caches,
+# generated norm-stats). The committed assets/itw_normalization/ JSON is explicitly
+# NOT excluded here (only assets/* generally is), since it must ship in the image.
+assets/*
+!assets/itw_normalization/
+checkpoints/
+logs/
+models/
+.git/
