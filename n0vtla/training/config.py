@@ -981,6 +981,74 @@ _CONFIGS = [
         num_train_steps=20_000,
         wandb_enabled=False,
     ),
+    # Stage-2 latent-to-expert alignment (paper Sec 4.2) -- see scripts/train_stage2_align_
+    # expert.py's module docstring for why this is a SMALL-SCALE bridge (not the paper's own
+    # large-scale Stage 2 re-run): n0-vtla-base's action expert was already taught to consume z
+    # by NeoteAI's own Stage 2/3, so this only needs to re-bridge a MODEST shift from continued
+    # human-data Stage-1 fine-tuning, on a small local slice of the real NeoData
+    # (NeoteAIEmbodied/OpenNeoData's flexiv platform -- see
+    # scripts/download_openneodata_flexiv_smoke.py), not a full re-alignment run. Not part of
+    # the released repo; action_dim/tactile settings mirror flexiv_tactile_reference/
+    # vtla_stage1_predictor_pretrain above (n_latent=5, tactile_kv) since this MUST shape-match
+    # the Stage-1 checkpoint it loads a delta from.
+    TrainConfig(
+        name="vtla_stage2_align_expert",
+        model=(
+            lambda: __import__(
+                "n0vtla.models_pytorch.n0vtla_policy", fromlist=["N0VTLAConfig"]
+            ).N0VTLAConfig(
+                pi05=True,
+                action_dim=32,
+                action_horizon=50,
+                pytorch_compile_mode=None,
+                tactile_predictor_enabled=True,
+                tactile_mode="latent",
+                n_latent=5,  # must match the Stage-1 checkpoint this loads a delta from
+                predictor_arch="tactile_kv",
+                z_gate_zero_init=True,
+                # Paper: "the keys and values from the vision-language prefix are masked out
+                # for the action queries" -- see N0VTLAPolicy._vl_dropout_keep, p=1.0 is exact.
+                vl_dropout_prob=1.0,
+                tactile_image_keys=("left_wrist_left_tactile", "left_wrist_right_tactile"),
+            )
+        )(),
+        data=LeRobotFlexivTactileDataConfig(
+            repo_id=os.environ.get("VTLA_DATASET_PATH", "/path/to/datasets/openneodata_flexiv_smoke"),
+            use_delta_eef_actions=True,
+            default_prompt="do the task",
+            tactile_keys=_FLEXIV_TACTILE_KEYS,
+            assets=AssetsConfig(
+                asset_id=os.environ.get("VTLA_ASSET_ID", "openneodata_flexiv_smoke"),
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        batch_size=64,
+        num_workers=8,
+        log_interval=50,
+        save_interval=500,
+        keep_period=10_000,
+        # Small-scale bridge, not the paper's 20,000-step re-alignment: a few hundred-2000
+        # steps is the intended order of magnitude (exact count set empirically from the smoke
+        # test's loss curve, see this project's Stage-2 design notes). peak_lr matches
+        # vtla_tactile_posttrain's scale (2e-5), not Stage-1's more conservative 1e-5, because
+        # this stage's trainable set (z_proj/z_gate/action expert) is NOT a freshly-warm-started
+        # module the way Stage-1's predictor continuation was -- it's ALSO already NeoData-
+        # trained, but the point of this stage is specifically to let it move enough to
+        # re-absorb the Stage-1 shift, not to sit as still as possible.
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=200,
+            peak_lr=2e-5,
+            decay_steps=2_000,
+            decay_lr=2e-6,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        pytorch_weight_path=os.environ.get(
+            "VTLA_PRETRAINED_CHECKPOINT", "/path/to/checkpoints/vtla_pretrained"
+        ),
+        num_train_steps=2_000,
+        wandb_enabled=False,
+    ),
     # Fine-tuning DROID configs.
     #
     #
