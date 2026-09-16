@@ -128,6 +128,18 @@ RUN HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 python -c \
 COPY . /app
 RUN python -m pip install -e . --no-deps
 
+# Printed on every interactive shell (docker run ... bash reads ~/.bashrc as root) so
+# anyone who already has an OLDER standalone open_container.sh/README (sent before this
+# image was updated) still sees current instructions from the freshly-pulled image
+# itself, without needing a new file resent to them.
+RUN echo '' >> /root/.bashrc \
+    && echo 'echo "--------------------------------------------------------------"' >> /root/.bashrc \
+    && echo 'echo "N0-VTLA: run  bash scripts/docker/quickstart.sh  to start."' >> /root/.bashrc \
+    && echo 'echo "Multi-GPU crash with a NCCL illegal-memory-access error? Run:"' >> /root/.bashrc \
+    && echo 'echo "  export NCCL_P2P_DISABLE=1"' >> /root/.bashrc \
+    && echo 'echo "first, then re-run quickstart.sh (see scripts/docker/README.md)."' >> /root/.bashrc \
+    && echo 'echo "--------------------------------------------------------------"' >> /root/.bashrc
+
 # No ENTRYPOINT on purpose: every documented invocation (scripts/docker/README.md,
 # run_stage1.sh, run_posttrain.sh) already passes a full command, e.g.
 # `docker run ... n0vtla_train bash train_stage1.sh`. An `ENTRYPOINT ["/bin/bash"]`
