@@ -26,7 +26,6 @@ Multi-Node Training:
 import dataclasses
 import faulthandler
 import gc
-import itertools
 import logging
 import os
 import platform
@@ -520,24 +519,25 @@ def train_loop(config: _config.TrainConfig):
                          f"(z_proj + z_gate stay trainable)")
 
 
-    skip_ddp_init_sync = use_ddp and (config.pytorch_weight_path is not None or resuming)
     if use_ddp:
-        if is_main:
-            logging.info(
-                "Wrapping model with DDP (init_sync=%s)",
-                not skip_ddp_init_sync,
-            )
         model = torch.nn.parallel.DistributedDataParallel(
             model,
             device_ids=[device.index] if device.type == "cuda" else None,
-            init_sync=not skip_ddp_init_sync,
             find_unused_parameters=True,  # Disable for memory efficiency
             gradient_as_bucket_view=True,  # Enable for memory efficiency
             static_graph=world_size >= 8,  # Enable for 8+ GPUs
         )
         trace_debug("ddp_ready")
 
-    # Load weights from weight_loader if specified (for fine-tuning)
+    # Load weights from weight_loader if specified (for fine-tuning). DDP's default
+    # init_sync=True (above) already broadcasts rank 0's initial state to every rank before
+    # this runs, so a strict=False load's missing keys (left at their pre-load, already-synced
+    # random init) stay identical across ranks with no extra broadcast needed -- every rank
+    # loading the same file from disk independently is enough. A prior version skipped
+    # init_sync as a bandwidth optimization and instead broadcast every one of ~1000+
+    # parameters/buffers individually in a Python loop; at 4+ GPUs this reliably crashed NCCL
+    # with an "illegal memory access" (reproduced 2026-09-16 resuming a real run on 4 GPUs).
+    # Removed rather than batched/coalesced: correctness no longer depends on it at all.
     if config.pytorch_weight_path is not None:
         logging.info(f"Loading weights from: {config.pytorch_weight_path}")
 
@@ -550,15 +550,6 @@ def train_loop(config: _config.TrainConfig):
         if missing or unexpected:
             logging.info(f"Loaded base weights with missing keys={missing}, unexpected keys={unexpected}")
         logging.info(f"Loaded PyTorch weights from {config.pytorch_weight_path}")
-        if use_ddp:
-            # DDP was wrapped with init_sync=False and the strict=False load leaves keys missing
-            # from the checkpoint at their per-rank random init; DDP only allreduces gradients, so
-            # those modules would stay desynced for the whole run. Broadcast the full model state
-            # from rank 0 (loaded keys are already identical, so this is a no-op for them).
-            with torch.no_grad():
-                for tensor in itertools.chain(model.module.parameters(), model.module.buffers()):
-                    dist.broadcast(tensor.data, src=0)
-            logging.info("post-load param broadcast done (fixes per-rank init of missing keys)")
 
     trace_debug("weights_ready")
 
