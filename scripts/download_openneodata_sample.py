@@ -36,6 +36,7 @@ import sys
 from pathlib import Path
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from huggingface_hub import HfApi
 
@@ -76,7 +77,15 @@ def _process_platform(
     api: HfApi, platform: str, target_bytes: int, output_root: Path, cache_dir: Path
 ) -> int:
     """Downloads+transforms files for one platform until target_bytes is reached (or
-    files run out). Returns bytes actually written (source-file-size proxy)."""
+    files run out). Returns bytes actually written (source-file-size proxy).
+
+    IMPORTANT: meta/episodes/chunk-000/ holds exactly ONE manifest file per platform
+    (verified 2026-09-16 across all 7 platforms) covering EVERY data file, not one
+    manifest file per data file -- there is no meta/episodes/.../file-001.parquet etc.
+    even when data/chunk-000/ has dozens/hundreds of files. So the episodes manifest is
+    downloaded ONCE here and sliced per data file via its own `data/chunk_index` /
+    `data/file_index` columns, instead of (wrongly) fetching a same-numbered episodes
+    file per data file."""
     out_dir = output_root / platform
     (out_dir / "meta" / "episodes" / "chunk-000").mkdir(parents=True, exist_ok=True)
     (out_dir / "data" / "chunk-000").mkdir(parents=True, exist_ok=True)
@@ -84,6 +93,7 @@ def _process_platform(
     info_src = _download(f"{platform}/meta/info.json", cache_dir)
     tasks_src = _download(f"{platform}/meta/tasks.parquet", cache_dir)
     stats_src = _download(f"{platform}/meta/stats.json", cache_dir)
+    episodes_src = _download(f"{platform}/meta/episodes/chunk-000/file-000.parquet", cache_dir)
     info = json.loads(info_src.read_text())
     has_eef_pose = "observation.eef_pose" in info.get("features", {})
     is_raw_joint_column, promote_eef_pose = _eef_pose_helpers(has_eef_pose)
@@ -95,6 +105,8 @@ def _process_platform(
         f"video_keys={video_keys}"
     )
 
+    all_episodes = pq.read_table(episodes_src)
+
     file_names = _list_data_files(api, platform)
     logging.info(f"[{platform}] {len(file_names)} data files available, target={target_bytes / 1e9:.1f}GB")
 
@@ -102,14 +114,19 @@ def _process_platform(
     total_frames = 0
     bytes_done = 0
     files_written = 0
+    written_episode_rows = []
 
     for fname in file_names:
         if bytes_done >= target_bytes:
             break
+        file_index = int(fname.split("-")[-1])
 
-        episodes_src = _download(f"{platform}/meta/episodes/chunk-000/{fname}.parquet", cache_dir)
-        episodes_table = pq.read_table(episodes_src)
-        n_episodes = episodes_table.num_rows
+        mask = pc.and_(
+            pc.equal(all_episodes["data/chunk_index"], 0),
+            pc.equal(all_episodes["data/file_index"], file_index),
+        )
+        file_episodes = all_episodes.filter(mask)
+        n_episodes = file_episodes.num_rows
         if n_episodes == 0:
             continue
 
@@ -122,10 +139,7 @@ def _process_platform(
         pq.write_table(data_table, out_dir / "data" / "chunk-000" / f"{fname}.parquet")
         bytes_done += data_src.stat().st_size
 
-        episodes_table = _canonicalize_columns(episodes_table, is_raw_joint_column, promote_eef_pose)
-        episodes_table = episodes_table.select(_drop_narrow_stats(episodes_table.column_names))
-        pq.write_table(episodes_table, out_dir / "meta" / "episodes" / "chunk-000" / f"{fname}.parquet")
-        bytes_done += episodes_src.stat().st_size
+        written_episode_rows.append(file_episodes)
 
         for key in video_keys:
             renamed_key = _rename_col(key)
@@ -147,6 +161,11 @@ def _process_platform(
     if files_written == 0:
         logging.warning(f"[{platform}] nothing written (target too small or no files) -- skipping")
         return 0
+
+    written_episodes = pa.concat_tables(written_episode_rows)
+    written_episodes = _canonicalize_columns(written_episodes, is_raw_joint_column, promote_eef_pose)
+    written_episodes = written_episodes.select(_drop_narrow_stats(written_episodes.column_names))
+    pq.write_table(written_episodes, out_dir / "meta" / "episodes" / "chunk-000" / "file-000.parquet")
 
     kept_features = {k: v for k, v in info["features"].items() if not is_raw_joint_column(k)}
     renamed_features = {_rename_col(promote_eef_pose(k)): v for k, v in kept_features.items()}
