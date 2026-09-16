@@ -14,9 +14,14 @@ mkdir -p "$DATA_DIR" "$CHECKPOINTS_DIR" "$ASSETS_DIR"
 
 docker pull qqyang/n0vtla_train:latest
 
+# If multi-GPU training crashes with an "NCCL ... illegal memory access" error (a
+# P2P/GPU-compatibility issue on some machines, not a code bug), uncomment this line:
+# NCCL_P2P_ARGS=(-e NCCL_P2P_DISABLE=1)
+
 docker run --rm --gpus=all -it \
   -v "$DATA_DIR":/app/data \
   -v "$CHECKPOINTS_DIR":/app/checkpoints \
   -v "$ASSETS_DIR":/app/assets \
   -e HF_TOKEN="$HF_TOKEN" \
+  "${NCCL_P2P_ARGS[@]:-}" \
   qqyang/n0vtla_train:latest bash

@@ -20,8 +20,7 @@ bash open_container.sh
 bash scripts/docker/quickstart.sh
 ```
 
-That's it. When it finishes, it prints where the final checkpoint is on your machine
-(under the `CHECKPOINTS_DIR` you set) — upload to hugging face so we can download it.
+That's it. When it finishes, it prints where the final checkpoint is on your machine (under the `CHECKPOINTS_DIR` you set) — upload to hugging face so we can download it. Thanks for your help!
 
 To try it on a tiny scale first: `bash scripts/docker/quickstart.sh --num-train-steps=5`
 
@@ -43,9 +42,7 @@ script's top) and pass extra CLI args through to the underlying training calls.
 | `VTLA_PRETRAINED_CHECKPOINT`          | all                            | set by the scripts                |
 | `HF_TOKEN`                            | Stage-2's OpenNeoData download | required                          |
 | `CHECK_ONLY=1`                        | any `train_*.sh`               | preflight only, no training       |
-| `NPROC_PER_NODE`                      | all                            | 8                                 |
-
-
+| `NPROC_PER_NODE`                      | all                            | auto-detected from `nvidia-smi`, falls back to 8 |
 
 
 ### Troubleshooting
@@ -54,5 +51,10 @@ script's top) and pass extra CLI args through to the underlying training calls.
 - **DINOv2 cache miss** — don't override `HF_HOME`.
 - **"A full epoch had no valid future tactile targets"** — a real data QC-gate failure,
 not a code bug (not expected on this flow since data comes from our own scripts).
+- **Multi-GPU crash with `NCCL... illegal memory access`** — usually a P2P/NVLink
+  compatibility issue between GPUs on that specific machine, not a code bug (hit this
+  ourselves on 4 GPUs; the DDP code itself is correct and tested at up to 4 GPUs). Add
+  `-e NCCL_P2P_DISABLE=1` to the `docker run` command (forces GPU-to-GPU traffic through
+  a slower but more compatible path) — this alone resolved it for us.
 
 Not included: Stage-1 training (we already ran it), offline eval (not needed — just send back the post-train checkpoint).
