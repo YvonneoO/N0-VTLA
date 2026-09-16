@@ -10,12 +10,13 @@ cd "$REPO_ROOT"
 
 EXP_NAME_STAGE2="${EXP_NAME_STAGE2:-stage2_align}"
 EXP_NAME_POSTTRAIN="${EXP_NAME_POSTTRAIN:-tactile_posttrain}"
+OPENNEODATA_PLATFORM="${OPENNEODATA_PLATFORM:-flexiv}"
 
 echo "[1/3] Stage-2 training (exp=$EXP_NAME_STAGE2)"
 VTLA_PRETRAINED_CHECKPOINT="checkpoints/n0-vtla-base" \
 VTLA_STAGE1_CHECKPOINT="checkpoints/n0-vtla_ts_pretrain" \
-VTLA_DATASET_PATH="data/openneodata_smoke" \
-VTLA_ASSET_ID="openneodata_smoke" \
+VTLA_DATASET_PATH="data/openneodata_sample/$OPENNEODATA_PLATFORM" \
+VTLA_ASSET_ID="openneodata_sample" \
 EXP_NAME="$EXP_NAME_STAGE2" \
   bash train_stage2.sh "$@"
 

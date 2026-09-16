@@ -10,7 +10,8 @@ cd "$REPO_ROOT"
 
 STAGE1_STEP="${STAGE1_STEP:-14000}"
 OPENNEODATA_PLATFORM="${OPENNEODATA_PLATFORM:-flexiv}"
-OPENNEODATA_EPISODES="${OPENNEODATA_EPISODES:-2}"
+OPENNEODATA_TARGET_PCT="${OPENNEODATA_TARGET_PCT:-5}"
+OPENNEODATA_MAX_GB="${OPENNEODATA_MAX_GB:-30}"
 
 echo "[1/4] base checkpoint"
 hf download NeoteAI/n0-vtla-base --local-dir checkpoints/n0-vtla-base
@@ -19,15 +20,17 @@ echo "[2/4] our Stage-1 checkpoint (step $STAGE1_STEP)"
 hf download qqyang/zihiao_real_test --repo-type dataset \
   --include "n0-vtla_ts_pretrain/$STAGE1_STEP/model.safetensors" --local-dir checkpoints
 
-echo "[3/4] Stage-2 data slice ($OPENNEODATA_PLATFORM, $OPENNEODATA_EPISODES episodes) + norm stats"
-python scripts/download_openneodata_flexiv_smoke.py --platform "$OPENNEODATA_PLATFORM" \
-  --output data/openneodata_smoke --num-episodes "$OPENNEODATA_EPISODES"
+echo "[3/4] Stage-2 data slice ($OPENNEODATA_PLATFORM, ${OPENNEODATA_TARGET_PCT}% / max ${OPENNEODATA_MAX_GB}GB) + norm stats"
+python scripts/download_openneodata_sample.py --platforms "$OPENNEODATA_PLATFORM" \
+  --target-pct "$OPENNEODATA_TARGET_PCT" --max-gb "$OPENNEODATA_MAX_GB" \
+  --output data/openneodata_sample
 case "$OPENNEODATA_PLATFORM" in
   umi|arx5|aloha) STAGE2_ROBOT=aloha ;;  # bimanual platforms
   *) STAGE2_ROBOT=flexiv ;;              # single-arm platforms
 esac
 python scripts/compute_canonical_norm.py --train-config-name vtla_stage2_align_expert \
-  --robot "$STAGE2_ROBOT" --repo-id data/openneodata_smoke --asset-id openneodata_smoke
+  --robot "$STAGE2_ROBOT" --repo-id "data/openneodata_sample/$OPENNEODATA_PLATFORM" \
+  --asset-id openneodata_sample
 
 echo "[4/4] post-train wetlab data (ready-made) + norm stats"
 # NOTE: --include takes multiple space-separated patterns in ONE flag (nargs='*');
