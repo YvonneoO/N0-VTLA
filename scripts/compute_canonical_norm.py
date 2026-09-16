@@ -5,12 +5,21 @@ The script reads 32-dimensional ``observation.state`` and ``action`` columns,
 constructs a 50-step action horizon, applies the selected robot's element-wise
 delta convention, and writes an OpenPI-compatible ``norm_stats.json``.
 
-Example:
+Example (single dataset):
   python scripts/compute_canonical_norm.py \
     --repo-id /path/to/dataset \
     --robot flexiv \
     --train-config-name my_flexiv_predictor \
     --asset-id my_dataset
+
+Multiple datasets (e.g. several OpenNeoData platforms) can be combined into ONE
+norm_stats.json by passing --repo-id/--robot more than once, in the SAME order --
+each repo gets its OWN delta mask (a mixed single-arm + bimanual set of platforms
+needs different masks per platform, not one shared --robot value):
+  python scripts/compute_canonical_norm.py \
+    --repo-id /path/to/flexiv_slice --repo-id /path/to/umi_slice \
+    --robot flexiv --robot aloha \
+    --train-config-name vtla_stage2_align_expert --asset-id openneodata_sample
 """
 
 from __future__ import annotations
@@ -177,70 +186,91 @@ def _train_episode_indices(repo: Path) -> set[int] | None:
     return {row["episode_index"] for row in rows if row["split"] == "train"}
 
 
-def compute(spec: dict, max_frames: int | None, train_only: bool = False) -> tuple[dict, int]:
-    repo = Path(spec["repo_id"])
-    if not (repo / "data").is_dir():
-        raise FileNotFoundError(f"dataset data directory not found: {repo / 'data'}")
+def compute(specs: list[dict], max_frames: int | None, train_only: bool = False) -> tuple[dict, int]:
+    """specs: one dict per dataset ({"repo_id", "delta_mask"}), combined into ONE set of
+    stats (shared RunningStats accumulators across all of them) -- see this module's
+    docstring for why each dataset needs its own delta_mask rather than one shared value."""
     state_stats = RunningStats()
     action_stats = RunningStats()
     processed = 0
 
-    train_indices = _train_episode_indices(repo) if train_only else None
-    if train_only and train_indices is None:
-        raise ValueError("--train-only requested but meta/episodes.jsonl has no split tags")
+    for spec in specs:
+        repo = Path(spec["repo_id"])
+        if not (repo / "data").is_dir():
+            raise FileNotFoundError(f"dataset data directory not found: {repo / 'data'}")
 
-    for parquet_path in sorted((repo / "data").rglob("*.parquet")):
-        if train_indices is not None and int(parquet_path.stem.split("_")[-1]) not in train_indices:
-            continue
-        table = pq.read_table(parquet_path, columns=["observation.state", "action"])
-        state = read_fixed_list(table, "observation.state")
-        action = read_fixed_list(table, "action")
+        train_indices = _train_episode_indices(repo) if train_only else None
+        if train_only and train_indices is None:
+            raise ValueError(f"--train-only requested but {repo} has no split tags in meta/episodes.jsonl")
 
-        if max_frames is not None:
-            remaining = max_frames - processed
-            if remaining <= 0:
-                break
-            state = state[:remaining]
-            action = action[:remaining]
+        for parquet_path in sorted((repo / "data").rglob("*.parquet")):
+            if train_indices is not None and int(parquet_path.stem.split("_")[-1]) not in train_indices:
+                continue
+            table = pq.read_table(parquet_path, columns=["observation.state", "action"])
+            state = read_fixed_list(table, "observation.state")
+            action = read_fixed_list(table, "action")
 
-        actions = action_horizon_sequence(action)
-        actions = apply_delta(actions, state, spec["delta_mask"])
-        state_stats.update(state)
-        action_stats.update(actions)
-        processed += state.shape[0]
+            if max_frames is not None:
+                remaining = max_frames - processed
+                if remaining <= 0:
+                    return (
+                        {"norm_stats": {"state": state_stats.as_json(), "actions": action_stats.as_json()}},
+                        processed,
+                    )
+                state = state[:remaining]
+                action = action[:remaining]
 
-        if processed % 50000 < state.shape[0]:
-            print(f"processed {processed} frames")
-        if max_frames is not None and processed >= max_frames:
-            break
+            actions = action_horizon_sequence(action)
+            actions = apply_delta(actions, state, spec["delta_mask"])
+            state_stats.update(state)
+            action_stats.update(actions)
+            processed += state.shape[0]
+
+            if processed % 50000 < state.shape[0]:
+                print(f"processed {processed} frames (repo={repo.name})")
 
     return {"norm_stats": {"state": state_stats.as_json(), "actions": action_stats.as_json()}}, processed
 
 
-def resolve_spec(args: argparse.Namespace) -> tuple[str, dict]:
-    repo = Path(args.repo_id)
-    return args.train_config_name, {
-        "repo_id": str(repo),
-        "asset_id": args.asset_id or repo.name,
-        "delta_mask": ROBOT_DELTA_MASKS[args.robot],
-    }
+def resolve_specs(args: argparse.Namespace) -> tuple[str, list[dict], str]:
+    repo_ids: list[str] = args.repo_id
+    robots: list[str] = args.robot
+    if len(robots) == 1:
+        robots = robots * len(repo_ids)
+    if len(robots) != len(repo_ids):
+        raise ValueError(
+            f"--robot given {len(robots)} time(s) but --repo-id given {len(repo_ids)} time(s) -- "
+            "pass --robot once (applies to all repos) or once per --repo-id, in the same order."
+        )
+    specs = [
+        {"repo_id": str(Path(r)), "delta_mask": ROBOT_DELTA_MASKS[robot]}
+        for r, robot in zip(repo_ids, robots)
+    ]
+    asset_id = args.asset_id or Path(repo_ids[0]).name
+    return args.train_config_name, specs, asset_id
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--repo-id", required=True, help="Local canonical LeRobot dataset root.")
+    parser.add_argument("--repo-id", required=True, action="append",
+                         help="Local canonical LeRobot dataset root. Repeat to combine multiple "
+                              "datasets into one norm_stats.json (pass --robot the same number of "
+                              "times, in the same order, or once to apply to all of them).")
     parser.add_argument(
         "--robot",
         required=True,
+        action="append",
         choices=sorted(ROBOT_DELTA_MASKS),
-        help="Robot layout used to select the element-wise delta mask.",
+        help="Robot layout used to select the element-wise delta mask. Repeat in the same order "
+             "as --repo-id for a mixed single-arm/bimanual combination, or pass once to apply "
+             "to every --repo-id.",
     )
     parser.add_argument(
         "--train-config-name",
         required=True,
         help="TrainConfig.name used to choose assets/<train-config-name>/<asset-id>/norm_stats.json.",
     )
-    parser.add_argument("--asset-id", help="Asset id directory. Defaults to basename of --repo-id.")
+    parser.add_argument("--asset-id", help="Asset id directory. Defaults to basename of the first --repo-id.")
     parser.add_argument("--max-frames", type=int, default=None)
     parser.add_argument("--train-only", action="store_true",
                          help="Only fit on episodes tagged split==\"train\" in meta/episodes.jsonl "
@@ -253,10 +283,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    train_config_name, spec = resolve_spec(args)
-    payload, processed = compute(spec, args.max_frames, train_only=args.train_only)
+    train_config_name, specs, asset_id = resolve_specs(args)
+    payload, processed = compute(specs, args.max_frames, train_only=args.train_only)
     repo_root = Path(args.repo_root).resolve() if args.repo_root else Path(__file__).resolve().parents[1]
-    output_dir = repo_root / "assets" / train_config_name / spec["asset_id"]
+    output_dir = repo_root / "assets" / train_config_name / asset_id
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "norm_stats.json"
     output_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")

@@ -128,14 +128,18 @@ stage1_latest = pathlib.Path(stage1_dir) / str(max(stage1_steps)) / "model.safet
 if not stage1_latest.exists():
     raise SystemExit(f"missing Stage-1 checkpoint file: {stage1_latest}")
 
-# Canonical LeRobot-v3 dataset (any OpenNeoData platform) -- shallow structure check.
+# Canonical LeRobot-v3 dataset(s) (any OpenNeoData platform(s)) -- shallow structure
+# check. VTLA_DATASET_PATH may be one path or a comma-separated list of several (e.g.
+# one per platform) -- LeRobotCanonicalTaskTactileDataConfig.repo_ids concatenates all
+# of them for training when more than one is given.
 dataset_path = os.environ.get("VTLA_DATASET_PATH")
 if not dataset_path:
     raise SystemExit("missing VTLA_DATASET_PATH")
-dataset_dir = pathlib.Path(dataset_path)
-for marker in ("meta", "data", "videos"):
-    if not (dataset_dir / marker).is_dir():
-        raise SystemExit(f"VTLA_DATASET_PATH missing expected LeRobot-v3 dir: {dataset_dir / marker}")
+dataset_dirs = [pathlib.Path(p) for p in dataset_path.split(",")]
+for dataset_dir in dataset_dirs:
+    for marker in ("meta", "data", "videos"):
+        if not (dataset_dir / marker).is_dir():
+            raise SystemExit(f"VTLA_DATASET_PATH missing expected LeRobot-v3 dir: {dataset_dir / marker}")
 
 # Precomputed norm stats for VTLA_ASSET_ID (scripts/compute_canonical_norm.py's output).
 asset_id = os.environ.get("VTLA_ASSET_ID")
@@ -152,7 +156,7 @@ print(f"environment OK: torch={torch.__version__}, GPUs={visible_gpus}")
 print(f"config OK: {cfg.name}")
 print(f"base checkpoint OK: {base_checkpoint}")
 print(f"Stage-1 checkpoint OK: {stage1_latest} (step {max(stage1_steps)})")
-print(f"dataset OK: {dataset_dir}")
+print(f"dataset OK: {dataset_dirs}")
 print(f"norm stats OK: {norm_stats}")
 print("DINOv2 cache OK")
 PY

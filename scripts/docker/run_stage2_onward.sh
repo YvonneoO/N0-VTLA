@@ -10,12 +10,28 @@ cd "$REPO_ROOT"
 
 EXP_NAME_STAGE2="${EXP_NAME_STAGE2:-stage2_align}"
 EXP_NAME_POSTTRAIN="${EXP_NAME_POSTTRAIN:-tactile_posttrain}"
-OPENNEODATA_PLATFORM="${OPENNEODATA_PLATFORM:-flexiv}"
+OPENNEODATA_DIR="data/openneodata_sample"
 
-echo "[1/3] Stage-2 training (exp=$EXP_NAME_STAGE2)"
+# setup_stage2_prereqs.sh wrote one line per platform it actually downloaded (a separate
+# `bash` process, so this can't just inherit a shell variable from it) -- reconstruct the
+# same comma-separated multi-dataset VTLA_DATASET_PATH from that, joining every platform
+# LeRobotCanonicalTaskTactileDataConfig.repo_ids then concatenates for training.
+if [[ -f "$OPENNEODATA_DIR/.platforms" ]]; then
+  mapfile -t PLATFORM_DIRS < "$OPENNEODATA_DIR/.platforms"
+else
+  echo "$OPENNEODATA_DIR/.platforms missing -- run setup_stage2_prereqs.sh first" >&2
+  exit 1
+fi
+OPENNEODATA_PATHS=()
+for p in "${PLATFORM_DIRS[@]}"; do
+  OPENNEODATA_PATHS+=("$OPENNEODATA_DIR/$p")
+done
+STAGE2_DATASET_PATH="$(IFS=,; echo "${OPENNEODATA_PATHS[*]}")"
+
+echo "[1/3] Stage-2 training (exp=$EXP_NAME_STAGE2, platforms=${PLATFORM_DIRS[*]})"
 VTLA_PRETRAINED_CHECKPOINT="checkpoints/n0-vtla-base" \
 VTLA_STAGE1_CHECKPOINT="checkpoints/n0-vtla_ts_pretrain" \
-VTLA_DATASET_PATH="data/openneodata_sample/$OPENNEODATA_PLATFORM" \
+VTLA_DATASET_PATH="$STAGE2_DATASET_PATH" \
 VTLA_ASSET_ID="openneodata_sample" \
 EXP_NAME="$EXP_NAME_STAGE2" \
   bash train_stage2.sh "$@"

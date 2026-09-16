@@ -480,7 +480,14 @@ class LeRobotCanonicalTaskTactileDataConfig(DataConfigFactory):
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
-        repo_ids = (self.repo_id,)
+        # self.repo_ids (inherited from DataConfigFactory, already plumbed through
+        # create_base_config -> DataConfig.repo_ids, which the data loader concatenates)
+        # is normally None -- every existing single-dataset config entry (Stage-1 included)
+        # only ever sets repo_id, so this falls back to the original single-repo behavior
+        # unchanged. Set repo_ids explicitly (e.g. a comma-separated VTLA_DATASET_PATH) to
+        # train on multiple LeRobot dataset roots at once (added 2026-09-16 for Stage-2
+        # multi-platform OpenNeoData; see vtla_stage2_align_expert's env handling).
+        repo_ids = self.repo_ids if self.repo_ids else (self.repo_id,)
 
         stage1 = bool(getattr(model_config, "stage1_pretrain_enabled", False))
         if stage1 and self.future_frame_offset <= 0:
@@ -1025,8 +1032,17 @@ _CONFIGS = [
                 tactile_image_keys=cs.TACTILE_SHORT_KEYS,
             )
         )(),
+        # VTLA_DATASET_PATH may be a single dataset root, or a comma-separated list of
+        # several (e.g. one per OpenNeoData platform) -- LeRobotCanonicalTaskTactileDataConfig
+        # concatenates all of repo_ids for training when it's set (2026-09-16); repo_id alone
+        # still names one of them (the first) for fps lookup / logging, unchanged from before.
         data=LeRobotCanonicalTaskTactileDataConfig(
-            repo_id=os.environ.get("VTLA_DATASET_PATH", "/path/to/datasets/openneodata_smoke"),
+            repo_id=os.environ.get("VTLA_DATASET_PATH", "/path/to/datasets/openneodata_smoke").split(",")[0],
+            repo_ids=(
+                tuple(os.environ["VTLA_DATASET_PATH"].split(","))
+                if len(os.environ.get("VTLA_DATASET_PATH", "").split(",")) > 1
+                else None
+            ),
             tolerance_s=0.04,
             use_delta_eef_actions=True,
             default_prompt=os.environ.get("VTLA_DEFAULT_PROMPT", "do the task"),
