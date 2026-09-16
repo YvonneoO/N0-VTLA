@@ -6,9 +6,9 @@ don't need to run Stage-1 or build anything — just pull the image and run two 
 ## Steps
 
 ```bash
-# 1. Edit the 4 placeholders at the top of open_container.sh:
-#    DATA_DIR, CHECKPOINTS_DIR, ASSETS_DIR, HF_TOKEN -- set them to real local
-#    paths / your HF token.
+# 1. Edit the 3 placeholders at the top of open_container.sh:
+#    DATA_DIR, CHECKPOINTS_DIR, ASSETS_DIR -- set them to real local paths.
+#    (No HF token needed -- one is already baked into the image.)
 
 # 2. Pull the image, then run open_container.sh to open a shell inside it
 #    (open_container.sh does this pull itself -- shown here so you can run it
@@ -40,7 +40,7 @@ script's top) and pass extra CLI args through to the underlying training calls.
 | `VTLA_STAGE1_CHECKPOINT`              | Stage-2                        | `checkpoints/n0-vtla_ts_pretrain` |
 | `VTLA_DATASET_PATH` / `VTLA_ASSET_ID` | Stage-2, post-train            | set by the scripts                |
 | `VTLA_PRETRAINED_CHECKPOINT`          | all                            | set by the scripts                |
-| `HF_TOKEN`                            | Stage-2's OpenNeoData download | required                          |
+| `HF_TOKEN`                            | Stage-2's OpenNeoData download | baked into the image, nothing to set |
 | `CHECK_ONLY=1`                        | any `train_*.sh`               | preflight only, no training       |
 | `NPROC_PER_NODE`                      | all                            | auto-detected from `nvidia-smi`, falls back to 8 |
 

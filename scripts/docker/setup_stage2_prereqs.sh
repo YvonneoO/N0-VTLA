@@ -2,11 +2,20 @@
 set -euo pipefail
 
 # Downloads everything needed to start directly at Stage-2 (skips running Stage-1
-# yourself -- uses our own already-trained Stage-1 checkpoint instead). Needs
-# HF_TOKEN (OpenNeoData is gated; everything else here is public).
+# yourself -- uses our own already-trained Stage-1 checkpoint instead). OpenNeoData and
+# our checkpoint dataset are both gated; HF_TOKEN is baked into the image, not something
+# you need to provide.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
+
+# Always use the token baked into the image at build time, regardless of whatever
+# HF_TOKEN happens to be set to at `docker run` time -- an already-sent older copy of
+# open_container.sh still asks the user to fill in their own HF_TOKEN placeholder and
+# passes it via `-e`, which would otherwise silently override/break this one.
+if [[ -s /opt/hf_token ]]; then
+  export HF_TOKEN="$(cat /opt/hf_token)"
+fi
 
 STAGE1_STEP="${STAGE1_STEP:-14000}"
 # Unset/empty -> download_openneodata_sample.py's own default (all 7 OpenNeoData platforms).

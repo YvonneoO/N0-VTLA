@@ -21,6 +21,22 @@ FROM nvidia/cuda:${CUDA_IMAGE_TAG}
 
 WORKDIR /app
 
+# Baked in at build time (--build-arg HF_TOKEN=...) so the external collaborator never
+# needs their own HF token -- OpenNeoData (Stage-2 data) and our zihiao_real_test
+# checkpoint dataset are both gated. Defaults to empty so a plain `docker build` with no
+# --build-arg produces a clean image (this Dockerfile itself is committed/pushed to a
+# public GitHub repo and must never contain a literal token).
+#
+# Also written to a file (/opt/hf_token), not just the ENV: an already-distributed copy
+# of open_container.sh (sent to a collaborator before this change) still has its own
+# HF_TOKEN="<placeholder>" line and unconditionally passes it via `-e HF_TOKEN=...`,
+# which would silently clobber this baked-in ENV with garbage. setup_stage2_prereqs.sh
+# re-exports HF_TOKEN from this file unconditionally so it wins regardless of what an
+# old/new open_container.sh does.
+ARG HF_TOKEN=""
+RUN printf '%s' "$HF_TOKEN" > /opt/hf_token && chmod 644 /opt/hf_token
+ENV HF_TOKEN=${HF_TOKEN}
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
