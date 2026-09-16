@@ -115,6 +115,11 @@ def _process_platform(
     bytes_done = 0
     files_written = 0
     written_episode_rows = []
+    # Video files are packed INDEPENDENTLY per key -- a data file's episodes can span
+    # several different video files for the same key (verified 2026-09-16: one flexiv
+    # data file's 159 episodes referenced 5 different third_view video files, not 1).
+    # Track what's already been pulled per key so re-referenced files aren't re-downloaded.
+    downloaded_videos: dict[str, set[tuple[int, int]]] = {key: set() for key in video_keys}
 
     for fname in file_names:
         if bytes_done >= target_bytes:
@@ -145,10 +150,16 @@ def _process_platform(
             renamed_key = _rename_col(key)
             video_dst_dir = out_dir / "videos" / renamed_key / "chunk-000"
             video_dst_dir.mkdir(parents=True, exist_ok=True)
-            video_filename = f"{platform}/videos/{key}/chunk-000/{fname}.mp4"
-            video_src = _download(video_filename, cache_dir)
-            (video_dst_dir / f"{fname}.mp4").write_bytes(video_src.read_bytes())
-            bytes_done += video_src.stat().st_size
+            chunk_col = f"videos/{key}/chunk_index"
+            file_col = f"videos/{key}/file_index"
+            referenced = set(zip(file_episodes[chunk_col].to_pylist(), file_episodes[file_col].to_pylist()))
+            for v_chunk, v_file in sorted(referenced - downloaded_videos[key]):
+                v_fname = f"file-{v_file:03d}"
+                video_filename = f"{platform}/videos/{key}/chunk-{v_chunk:03d}/{v_fname}.mp4"
+                video_src = _download(video_filename, cache_dir)
+                (video_dst_dir / f"{v_fname}.mp4").write_bytes(video_src.read_bytes())
+                bytes_done += video_src.stat().st_size
+                downloaded_videos[key].add((v_chunk, v_file))
 
         total_episodes += n_episodes
         total_frames += n_frames

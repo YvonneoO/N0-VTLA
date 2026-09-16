@@ -138,6 +138,9 @@ RUN echo '' >> /root/.bashrc \
     && echo 'echo "Multi-GPU crash with a NCCL illegal-memory-access error? Run:"' >> /root/.bashrc \
     && echo 'echo "  export NCCL_P2P_DISABLE=1"' >> /root/.bashrc \
     && echo 'echo "first, then re-run quickstart.sh (see scripts/docker/README.md)."' >> /root/.bashrc \
+    && echo 'echo "Crash with \"Bus error (SIGBUS)\" instead? That needs a bigger /dev/shm,"' >> /root/.bashrc \
+    && echo 'echo "which can only be set when the container STARTS, not from in here --"' >> /root/.bashrc \
+    && echo 'echo "exit, add --shm-size=16g to the docker run in open_container.sh, and reopen."' >> /root/.bashrc \
     && echo 'echo "--------------------------------------------------------------"' >> /root/.bashrc
 
 # No ENTRYPOINT on purpose: every documented invocation (scripts/docker/README.md,
