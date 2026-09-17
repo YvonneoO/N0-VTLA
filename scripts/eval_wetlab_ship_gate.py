@@ -46,6 +46,9 @@ NOISE_DOMINATED_REVERSAL_LOW = 0.40  # card: "40-50%"
 NOISE_DOMINATED_REVERSAL_HIGH = 0.50
 
 XYZ_SLICE = slice(10, 13)  # right_eef_mm_columns6d_10_19_revo2_raw6_20_26_v1 layout
+HAND_SLICE = slice(20, 26)  # six Revo2 motor targets, absolute logical counts (0-1000), not mm --
+# no dataset-card reference exists for this space, so these are reported descriptively
+# (mean/median/p95/max step + reversal rate) with no verdict, not compared to REF_*.
 
 
 def sample_frame_indices(episodes: list[dict], stride: int, margin: int) -> list[tuple[int, int]]:
@@ -109,6 +112,7 @@ def main() -> None:
 
     offsets = np.concatenate([[0], np.cumsum([ep["length"] for ep in episodes])[:-1]])
     all_steps, total_reversals, total_pairs, per_sample = [], 0, 0, []
+    all_hand_steps, total_hand_reversals, total_hand_pairs = [], 0, 0
     for episode_index, frame_index in pairs:
         global_index = int(offsets[episode_index]) + frame_index
         item = dataset[global_index]
@@ -127,8 +131,14 @@ def main() -> None:
         all_steps.append(steps)
         total_reversals += reversals
         total_pairs += n_pairs
+        hand = actions[:, HAND_SLICE]
+        hand_steps, hand_reversals, hand_n_pairs = step_stats(hand)
+        all_hand_steps.append(hand_steps)
+        total_hand_reversals += hand_reversals
+        total_hand_pairs += hand_n_pairs
         per_sample.append(dict(episode_index=episode_index, frame_index=frame_index,
-                                mean_step_mm=float(steps.mean()), max_step_mm=float(steps.max())))
+                                mean_step_mm=float(steps.mean()), max_step_mm=float(steps.max()),
+                                mean_hand_step=float(hand_steps.mean()), max_hand_step=float(hand_steps.max())))
 
     steps = np.concatenate(all_steps)
     mean_step = float(steps.mean())
@@ -137,6 +147,10 @@ def main() -> None:
                                      NOISE_DOMINATED_REVERSAL_LOW <= reversal_rate <= NOISE_DOMINATED_REVERSAL_HIGH or
                                      reversal_rate > NOISE_DOMINATED_REVERSAL_HIGH) else "ok_so_far"
 
+    hand_steps_all = np.concatenate(all_hand_steps)
+    mean_hand_step = float(hand_steps_all.mean())
+    hand_reversal_rate = total_hand_reversals / max(total_hand_pairs, 1)
+
     report = dict(
         checkpoint=str(args.checkpoint), dataset_root=str(args.dataset_root),
         zero_tactile=args.zero_tactile,
@@ -144,13 +158,21 @@ def main() -> None:
         predicted=dict(mean_step_mm=mean_step, median_step_mm=float(np.median(steps)),
                         p95_step_mm=float(np.percentile(steps, 95)), max_step_mm=float(steps.max()),
                         reversal_rate=reversal_rate),
+        predicted_hand=dict(
+            note="Revo2 motor-count space (0-1000 logical units, not mm) -- no dataset-card "
+                 "reference exists for this space; descriptive only, not a verdict input.",
+            mean_step=mean_hand_step, median_step=float(np.median(hand_steps_all)),
+            p95_step=float(np.percentile(hand_steps_all, 95)), max_step=float(hand_steps_all.max()),
+            reversal_rate=hand_reversal_rate,
+        ),
         reference_30hz_demonstrations=dict(mean_step_mm=REF_MEAN_STEP_MM, median_step_mm=REF_P50_STEP_MM,
                                             p95_step_mm=REF_P95_STEP_MM, reversal_rate=REF_REVERSAL_RATE,
                                             source="SingleBicycle/tacwam-wetlab-tasks dataset card #6"),
         verdict=verdict,
         verdict_note=("NOT a pass/fail certification -- a checkpoint clearing this gate has only been "
                       "shown to predict demonstration-scale, non-oscillating motion, not a successful "
-                      "task. A checkpoint failing it should not go anywhere near the real robot."),
+                      "task. A checkpoint failing it should not go anywhere near the real robot. The "
+                      "verdict is computed from arm xyz only (predicted, not predicted_hand)."),
         per_sample=per_sample,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -158,6 +180,8 @@ def main() -> None:
     print(f"mean_step_mm={mean_step:.2f} (ref {REF_MEAN_STEP_MM}) | "
           f"p95_step_mm={report['predicted']['p95_step_mm']:.2f} (ref {REF_P95_STEP_MM}) | "
           f"reversal_rate={reversal_rate:.3f} (ref {REF_REVERSAL_RATE}) | verdict={verdict}")
+    print(f"hand: mean_step={mean_hand_step:.2f} | p95_step={report['predicted_hand']['p95_step']:.2f} | "
+          f"reversal_rate={hand_reversal_rate:.3f} (motor-count units, no reference)")
     print(f"Full report: {args.output}")
 
 
