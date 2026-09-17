@@ -896,7 +896,7 @@ _CONFIGS = [
             "VTLA_PRETRAINED_CHECKPOINT", "/path/to/checkpoints/vtla_pretrained"
         ),
         num_train_steps=20_000,
-        wandb_enabled=False,
+        wandb_enabled=True,
     ),
     # Stage-1 predictor-grounding pretraining (paper Sec 4.2) -- action-FREE: trains only
     # tactile_encoder.tactile_proj + tactile_predictor + tactile_recon_head against an InfoNCE +
@@ -1075,7 +1075,7 @@ _CONFIGS = [
             "VTLA_PRETRAINED_CHECKPOINT", "/path/to/checkpoints/vtla_pretrained"
         ),
         num_train_steps=2_000,
-        wandb_enabled=False,
+        wandb_enabled=True,
     ),
     # Fine-tuning DROID configs.
     #
