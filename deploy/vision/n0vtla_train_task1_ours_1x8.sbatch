@@ -30,6 +30,15 @@ export VTLA_DATASET_PATH="$DATA_ROOT/canonical_wetlab_task1_train"
 export VTLA_ASSET_ID=task1_tuberack_train
 export VTLA_PRETRAINED_CHECKPOINT="$DATA_ROOT/n0-vtla-base_plus_stage1_human_14000"
 
+# See n0vtla_smoke_task1_officialbase.sbatch -- train.sh's preflight hardcodes
+# local_files_only=True for the DINOv2 config check, so pre-warm it first.
+export HF_HOME="/scratch/project/prj-02-uq-llms-for-reasoning/yqq/N0-VTLA/models/huggingface"
+python -c "
+from transformers import AutoConfig
+AutoConfig.from_pretrained('facebook/dinov2-base')
+print('DINOv2 config cached OK')
+"
+
 echo "=== starting task1_posttrain_ours on VISION, 1 node x 8 H200 GPUs ==="
 bash train.sh --batch-size=64 --save-interval=2000
 echo "=== TRAINING SCRIPT EXITED ==="
