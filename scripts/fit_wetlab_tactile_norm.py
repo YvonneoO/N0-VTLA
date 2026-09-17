@@ -36,7 +36,8 @@ SEED = 42
 LIVE_STD_THRESHOLD = 1e-4
 
 
-def fit_wetlab_normalization(episode_dirs: list[Path], *, samples_per_recording: int, seed: int) -> dict:
+def fit_wetlab_normalization(episode_dirs: list[Path], *, samples_per_recording: int, seed: int,
+                              task_name: str = "cap_to_tray", require_success_label: bool = True) -> dict:
     rng = np.random.default_rng(seed)
     values = [[] for _ in PAD_IDS]
     for ep in episode_dirs:
@@ -44,7 +45,8 @@ def fit_wetlab_normalization(episode_dirs: list[Path], *, samples_per_recording:
         # block-level capture file it's hard-linked into -- multiple trials
         # (including ones assigned to val or block-holdout) can share that same
         # file, so sampling from the full file range leaks across the split.
-        npz_path, own_frames = resolve_own_tactile_frames(ep)
+        npz_path, own_frames = resolve_own_tactile_frames(
+            ep, task_name=task_name, require_success_label=require_success_label)
         with np.load(npz_path, allow_pickle=False) as z:
             if len(own_frames) == 0:
                 raise ValueError(f"No qualifying frames for {ep}")
@@ -92,6 +94,11 @@ def main() -> None:
     parser.add_argument("output", type=Path)
     parser.add_argument("--samples-per-recording", type=int, default=SAMPLES_PER_RECORDING)
     parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument("--task-name", default="cap_to_tray",
+                         help="Expected robot/manifest.json task.name for every train episode.")
+    parser.add_argument("--skip-success-label-check", action="store_true",
+                         help="Skip manifest trial.label=='success'; use when this release's "
+                              "admission is authoritatively decided elsewhere (see wetlab_smoke_adapter).")
     args = parser.parse_args()
     if args.output.exists():
         raise FileExistsError("Use a new normalization version; do not overwrite statistics")
@@ -102,7 +109,9 @@ def main() -> None:
     if missing:
         raise FileNotFoundError(f"Missing train episodes: {missing}")
 
-    norm = fit_wetlab_normalization(episode_dirs, samples_per_recording=args.samples_per_recording, seed=args.seed)
+    norm = fit_wetlab_normalization(episode_dirs, samples_per_recording=args.samples_per_recording, seed=args.seed,
+                                     task_name=args.task_name,
+                                     require_success_label=not args.skip_success_label_check)
     norm["provenance"] = dict(
         smoke_test_dir=str(args.smoke_test_dir),
         split_manifest=str(args.split_manifest),
