@@ -520,12 +520,19 @@ class LeRobotCanonicalTaskTactileDataConfig(DataConfigFactory):
             ])
             stats_transforms = []
         elif self.use_delta_eef_actions:
-            delta_action_mask = _transforms.make_bool_mask(9, -1, 9, -1, -12)
+            # ChunkDeltaToCurrentState/RelRotAbsoluteActions, NOT DeltaActions/AbsoluteActions:
+            # the latter pair does plain element-wise subtraction/addition on the whole masked
+            # eef block, including the 6 rot6d dims -- rot6d is not a vector space, so that is
+            # not a valid relative rotation (verified: the resulting "delta" is badly degenerate,
+            # column norms ~0.02-0.08 instead of ~1, columns nearly anti-parallel instead of
+            # orthogonal, even for a true few-degree rotation). ChunkDeltaToCurrentState composes
+            # rotation matrices instead (R_action @ R_state^T) and RelRotAbsoluteActions is its
+            # exact inverse; xyz is unchanged (element-wise, which is valid for position).
             data_transforms = data_transforms.push(
-                inputs=[_transforms.DeltaActions(delta_action_mask)],
-                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+                inputs=[_transforms.ChunkDeltaToCurrentState()],
+                outputs=[_transforms.RelRotAbsoluteActions()],
             )
-            stats_transforms.append(_transforms.DeltaActions(delta_action_mask))
+            stats_transforms.append(_transforms.ChunkDeltaToCurrentState())
         model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
 
         fps = _get_local_dataset_fps(self.repo_id)
