@@ -479,6 +479,67 @@ class ChunkDeltaToCurrentState(DataTransformFn):
 
 
 @dataclasses.dataclass(frozen=True)
+class RelRotAbsoluteActions(DataTransformFn):
+    """Rewrite a chunk of RELATIVE eef targets (as produced by ChunkDeltaToCurrentState)
+    back into ABSOLUTE poses, using the current proprioceptive state ``data["state"]``.
+
+    This is the EXACT inverse of ChunkDeltaToCurrentState:
+      xyz:   action_xyz[t] = d_xyz[t] + s0_xyz                  (element-wise, like AbsoluteActions)
+      rot6d: R_action[t]   = d_R[t] @ R_s0                      (undoes d_R = R_action @ R_s0^T)
+      grip:  unchanged (already absolute)
+
+    Naively element-wise adding a predicted rot6d delta to the current rot6d state (what
+    plain ``AbsoluteActions`` does) does not recover a valid rotation: rot6d is not a vector
+    space, so its components cannot be composed by addition. This transform instead composes
+    the actual rotation matrices, mirroring ChunkDeltaToCurrentState's encode-side math.
+
+    An arm is only transformed if it is ACTIVE (its eef_xyz dims are all True in
+    ``action_mask``); inactive/masked arms keep placeholder values. Requires
+    ``data["state"]`` (the (D,) current proprioceptive state). A single-step chunk
+    (ndim == 1) and the absence of ``"actions"`` / ``"state"`` are no-ops.
+    """
+
+    def __call__(self, data: DataDict) -> DataDict:
+        if "actions" not in data or "state" not in data:
+            return data
+
+        actions = np.asarray(data["actions"], dtype=np.float32)
+        if actions.ndim == 1:
+            return data
+
+        actions = actions.copy()
+        state = np.asarray(data["state"], dtype=np.float32)
+        slots = _canonical_schema.ACTION_SLOTS
+
+        action_mask = data.get("action_mask")
+        if action_mask is not None:
+            action_mask = np.asarray(action_mask)
+
+        for xyz_name, rot_name in (
+            ("left_eef_xyz", "left_eef_rot6d"),
+            ("right_eef_xyz", "right_eef_rot6d"),
+        ):
+            xyz_lo, xyz_hi = slots[xyz_name]
+            rot_lo, rot_hi = slots[rot_name]
+
+            if action_mask is not None and not bool(np.all(action_mask[xyz_lo:xyz_hi])):
+                continue
+
+            # xyz: undo the subtraction, relative to the current state.
+            actions[:, xyz_lo:xyz_hi] += state[None, xyz_lo:xyz_hi]
+
+            # rot6d: R_action = R_rel @ R_state (undoes R_rel = R_action @ R_state^T).
+            ref = np.broadcast_to(state[None, rot_lo:rot_hi], actions[:, rot_lo:rot_hi].shape)
+            R_state = _rot6d_to_matrix(ref)                          # (H, 3, 3) degenerate-safe
+            R_rel = _rot6d_to_matrix(actions[:, rot_lo:rot_hi])      # (H, 3, 3)
+            R_action = np.einsum("...ij,...jk->...ik", R_rel, R_state)  # R_rel @ R_state
+            actions[:, rot_lo:rot_hi] = _matrix_to_rot6d(R_action)
+
+        data["actions"] = actions
+        return data
+
+
+@dataclasses.dataclass(frozen=True)
 class AbsoluteActions(DataTransformFn):
     """Repacks delta actions into absolute action space."""
 
