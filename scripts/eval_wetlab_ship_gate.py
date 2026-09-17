@@ -83,9 +83,14 @@ def main() -> None:
     parser.add_argument("--max-samples", type=int, default=60)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default=None, help="e.g. cuda:0. Defaults to cuda if available, else cpu.")
+    parser.add_argument("--zero-tactile", action="store_true",
+                         help="Zero every observation.image.*_tactile channel before inference -- a "
+                              "causal ablation for whether the action head actually leans on tactile.")
     args = parser.parse_args()
     if args.output.exists():
         raise FileExistsError(args.output)
+
+    import torch
 
     from n0vtla.policies import policy_config
     from n0vtla.training import config as _config
@@ -111,6 +116,10 @@ def main() -> None:
         # so DeltaActions' "actions" not in data no-op path matches real inference exactly,
         # instead of choking on a single-frame (no horizon axis) ground-truth action.
         item.pop("action", None)
+        if args.zero_tactile:
+            for key in item:
+                if isinstance(key, str) and key.startswith("observation.image.") and key.endswith("_tactile"):
+                    item[key] = torch.zeros_like(item[key])
         out = policy.infer(item)
         actions = np.asarray(out["actions"])  # (horizon, action_dim), absolute physical units
         xyz = actions[:, XYZ_SLICE]
@@ -130,6 +139,7 @@ def main() -> None:
 
     report = dict(
         checkpoint=str(args.checkpoint), dataset_root=str(args.dataset_root),
+        zero_tactile=args.zero_tactile,
         n_samples=len(pairs), n_step_pairs=len(steps),
         predicted=dict(mean_step_mm=mean_step, median_step_mm=float(np.median(steps)),
                         p95_step_mm=float(np.percentile(steps, 95)), max_step_mm=float(steps.max()),
