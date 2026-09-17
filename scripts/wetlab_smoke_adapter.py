@@ -92,17 +92,30 @@ def fit_smoke_pressure(archive, eligible):
                 fit_npz_indices=chosen.tolist(), seed=42, samples_per_recording=4)
 
 
-def resolve_episode_window(source):
+def resolve_episode_window(source, *, task_name="cap_to_tray", require_success_label=True):
     """Everything needed to know which rows/tactile-npz-frames THIS episode may use,
     shared between convert() and fit_wetlab_tactile_norm.py so a normalization fit
     can be restricted to an episode's own trial window rather than the whole
     block-level capture file it's hard-linked into (ROBOT_POSTTRAIN_OPEN_ISSUES.md
     #3.2-followup: fitting from the whole file let samples land outside the fitting
     episode's own window, and even inside a different, val-assigned trial sharing
-    the same underlying file)."""
+    the same underlying file).
+
+    task_name/require_success_label default to the original cap_to_tray release's
+    contract (manifest.json carries a trustworthy inline "success" label). Later
+    releases (e.g. task1_tube_rack_hole_transfer) use a different task.name and
+    leave trial.label null -- their own release doc names a separate authoritative
+    admission list (e.g. admission_index.json / training_split.json) instead. Pass
+    require_success_label=False for those and only iterate over already-admitted
+    uuids (build_wetlab_canonical_dataset.py's split_manifest, once translated from
+    that release's training_split.json, already does this)."""
     manifest = json.loads((source / "robot/manifest.json").read_text())
-    if manifest["task"]["name"] != "cap_to_tray" or manifest["trial"]["label"] != "success":
-        raise ValueError("Expected successful cap_to_tray trial")
+    if manifest["task"]["name"] != task_name:
+        raise ValueError(f"Expected task.name={task_name!r}, got {manifest['task']['name']!r}")
+    if require_success_label and manifest["trial"]["label"] != "success":
+        raise ValueError(f"Expected successful {task_name!r} trial, got trial.label="
+                          f"{manifest['trial']['label']!r} -- pass require_success_label=False "
+                          f"if this release's admission is authoritatively decided elsewhere")
     command_rows = [json.loads(l) for l in (source / "robot/arm_cmd.jsonl").open()]
     commands = [r for r in command_rows if r.get("accepted") is True and r.get("rc") == 0 and r.get("clutch")]
     hands = [json.loads(l) for l in (source / "robot/hand.jsonl").open()]
@@ -166,20 +179,22 @@ def resolve_episode_window(source):
                     video_indices=video_indices, camera_gaps=camera_gaps, runs=runs, chosen=chosen)
 
 
-def resolve_own_tactile_frames(source):
+def resolve_own_tactile_frames(source, *, task_name="cap_to_tray", require_success_label=True):
     """Unique tactile-npz frame indices this episode's own qualifying window(s)
     actually use -- the safe sampling pool for fitting normalization on this
     episode, as opposed to the whole (possibly multi-trial, cross-split) file."""
-    window = resolve_episode_window(source)
+    window = resolve_episode_window(source, task_name=task_name, require_success_label=require_success_label)
     return window["tactile_source"], np.unique(window["ti"][window["chosen"]])
 
 
-def convert(source, output, allow_unverified_sync, norm_path=None):
+def convert(source, output, allow_unverified_sync, norm_path=None, *,
+            task_name="cap_to_tray", task_description=None, require_success_label=True):
     if not allow_unverified_sync:
         raise ValueError("Physical clock alignment is unverified; require --allow-unverified-sync-smoke")
     if output.exists():
         raise FileExistsError(output)
-    window = resolve_episode_window(source)
+    task_description = TASK if task_description is None else task_description
+    window = resolve_episode_window(source, task_name=task_name, require_success_label=require_success_label)
     manifest, commands, hands, tactile_source = window["manifest"], window["commands"], window["hands"], window["tactile_source"]
     t, ai, aa, hi = window["t"], window["ai"], window["aa"], window["hi"]
     hand_command_age, ti, ta = window["hand_command_age"], window["ti"], window["ta"]
@@ -252,7 +267,7 @@ def convert(source, output, allow_unverified_sync, norm_path=None):
                 video_bytes += write_pressure_video(tactile_source,dst,ti[g],norm,hand="right")
             else:
                 video_bytes += write_aligned_rgb(source/f"{name}.mp4",dst,video_indices[name][g])
-        episodes.append(dict(episode_index=e,tasks=[TASK],length=n))
+        episodes.append(dict(episode_index=e,tasks=[task_description],length=n))
         stats.append(dict(episode_index=e,stats={k:_quantile_stats(v) for k,v in columns.items()}))
         np.savez_compressed(meta / f"source_map_{e:06d}.npz",timestamp_ns=t[g],h5_rows=g,
                             arm_command_index=ai[g],hand_row_index=hi[g],tactile_index=ti[g],
@@ -260,7 +275,7 @@ def convert(source, output, allow_unverified_sync, norm_path=None):
         total += n
     _write_jsonl(meta/"episodes.jsonl",episodes)
     _write_jsonl(meta/"episodes_stats.jsonl",stats)
-    _write_jsonl(meta/"tasks.jsonl",[dict(task_index=0,task=TASK)])
+    _write_jsonl(meta/"tasks.jsonl",[dict(task_index=0,task=task_description)])
     info = _info_json(len(runs),total,data_bytes,video_bytes,list(streams))
     info["robot_type"] = "xarm6_revo2_smoke_only" if norm_path is None else "xarm6_revo2"
     (meta/"info.json").write_text(json.dumps(info,indent=2))
@@ -275,5 +290,14 @@ if __name__ == "__main__":
     parser.add_argument("--norm-path",type=Path,default=None,
                          help="Shared tactile normalization from fit_wetlab_tactile_norm.py. "
                               "Omit only for a single-episode plumbing smoke.")
+    parser.add_argument("--task-name",default="cap_to_tray",
+                         help="Expected robot/manifest.json task.name for this episode.")
+    parser.add_argument("--task-description",default=None,
+                         help="LeRobot task string written into tasks.jsonl. Defaults to TASK.")
+    parser.add_argument("--skip-success-label-check",action="store_true",
+                         help="Skip manifest trial.label=='success'; use when this release's "
+                              "admission is authoritatively decided elsewhere (see resolve_episode_window).")
     args = parser.parse_args()
-    convert(args.source,args.output,args.allow_unverified_sync_smoke,norm_path=args.norm_path)
+    convert(args.source,args.output,args.allow_unverified_sync_smoke,norm_path=args.norm_path,
+            task_name=args.task_name,task_description=args.task_description,
+            require_success_label=not args.skip_success_label_check)

@@ -45,11 +45,15 @@ import wetlab_smoke_adapter as adapter
 from itw_tactile_smoke_adapter import _info_json, _write_jsonl
 
 
-def _convert_one(uuid: str, source: Path, source_output: Path, norm_path: Path) -> tuple[str, str | None]:
+def _convert_one(uuid: str, source: Path, source_output: Path, norm_path: Path, *,
+                  task_name: str, task_description: str | None,
+                  require_success_label: bool) -> tuple[str, str | None]:
     """Runs in a worker process (must be a top-level function to be picklable).
     Returns (uuid, None) on success or (uuid, error message) on a skip."""
     try:
-        adapter.convert(source, source_output, allow_unverified_sync=True, norm_path=norm_path)
+        adapter.convert(source, source_output, allow_unverified_sync=True, norm_path=norm_path,
+                         task_name=task_name, task_description=task_description,
+                         require_success_label=require_success_label)
     except ValueError as exc:
         return uuid, str(exc)
     return uuid, None
@@ -151,6 +155,17 @@ def main() -> None:
                          help="Parallel worker processes for the independent per-episode "
                               "conversions (pure CPU/IO work -- video decode/encode, no GPU "
                               "involved). merge() still runs single-threaded afterwards.")
+    parser.add_argument("--task-name", default="cap_to_tray",
+                         help="Expected robot/manifest.json task.name for every episode in "
+                              "this release (e.g. 'tube_to_rack' for task1_tube_rack_hole_transfer).")
+    parser.add_argument("--task-description", default=None,
+                         help="LeRobot task string written into tasks.jsonl/episodes.jsonl. "
+                              "Defaults to wetlab_smoke_adapter.TASK.")
+    parser.add_argument("--skip-success-label-check", action="store_true",
+                         help="Skip the manifest trial.label=='success' gate -- use for a "
+                              "release whose inline label isn't trustworthy (its own doc names "
+                              "the authoritative admission list instead, e.g. admission_index.json). "
+                              "Only safe when split_manifest already lists ONLY admitted uuids.")
     args = parser.parse_args()
     if args.output.exists():
         raise FileExistsError(args.output)
@@ -166,14 +181,18 @@ def main() -> None:
     results: dict[str, str | None] = {}
     if args.workers <= 1:
         for uuid, source_output in jobs.items():
-            _, error = _convert_one(uuid, args.smoke_test_dir / uuid, source_output, args.norm_path)
+            _, error = _convert_one(uuid, args.smoke_test_dir / uuid, source_output, args.norm_path,
+                                     task_name=args.task_name, task_description=args.task_description,
+                                     require_success_label=not args.skip_success_label_check)
             results[uuid] = error
             done = sum(1 for e in results.values() if e is None)
             print(f"{'SKIP ' + uuid + ': ' + error if error else 'converted ' + uuid} "
                   f"({done}/{len(all_uuids)} converted so far, {len(results) - done} skipped)")
     else:
         with ProcessPoolExecutor(max_workers=args.workers) as pool:
-            futures = {pool.submit(_convert_one, uuid, args.smoke_test_dir / uuid, source_output, args.norm_path): uuid
+            futures = {pool.submit(_convert_one, uuid, args.smoke_test_dir / uuid, source_output, args.norm_path,
+                                    task_name=args.task_name, task_description=args.task_description,
+                                    require_success_label=not args.skip_success_label_check): uuid
                        for uuid, source_output in jobs.items()}
             for future in as_completed(futures):
                 uuid, error = future.result()
