@@ -32,6 +32,9 @@ from pathlib import Path
 import numpy as np
 import pyarrow.parquet as pq
 
+from n0vtla.policies import canonical_schema as _canonical_schema
+from n0vtla.policies.rotation_utils import rot6d_delta_world
+
 
 ACTION_HORIZON = 50
 NUM_QUANTILE_BINS = 5000
@@ -40,10 +43,33 @@ NUM_QUANTILE_BINS = 5000
 # unused arm block) and gets identity normalisation stats. See RunningStats.as_json.
 _CONSTANT_DIM_TOL = 1e-8
 
+# NOTE on "flexiv"/"aloha": these masks are element-wise, applied to actions[..., :dims]
+# starting at index 0 -- correct ONLY for a dataset whose single-arm (or first-arm) EEF
+# block itself starts at index 0. The wetlab canonical layout (see
+# scripts/wetlab_smoke_adapter.py's LAYOUT) instead puts its one active arm in the RIGHT
+# slot, canonical_schema.ACTION_SLOTS["right_eef_xyz"/"right_eef_rot6d"] = indices
+# [10:13]/[13:19] -- "flexiv"'s mask silently no-ops on that data (it only ever touches
+# indices [0:10], which are the wetlab layout's always-zero left-arm padding). Confirmed
+# empirically 2026-09-17: task1_tuberack_train's action[10:13] stats came out identical to
+# state[10:13] (absolute-value stats, not delta) when computed with --robot flexiv.
+#
+# A second, independent bug: even at the right indices, "flexiv"/"aloha" subtract
+# element-wise across the whole 9-dim eef block, including the 6 rot6d dims. rot6d is not
+# a vector space -- element-wise subtraction of two rot6d vectors is not a valid relative
+# rotation (verified: the result is badly degenerate, column norms ~0.02-0.08 instead of
+# ~1, columns nearly anti-parallel instead of orthogonal, even for a true 4.68 deg
+# rotation). Use ROBOT_ROTATION_AWARE for any dataset built by wetlab_smoke_adapter.py --
+# it targets the correct (right-arm) indices via canonical_schema.ACTION_SLOTS and
+# composes rotation matrices (matches n0vtla.transforms.ChunkDeltaToCurrentState's math)
+# instead of subtracting rot6d vectors.
 ROBOT_DELTA_MASKS = {
     "flexiv": [True] * 9 + [False],
     "aloha": [True] * 9 + [False] + [True] * 9 + [False],
 }
+
+# Sentinel delta_mask value routed to apply_delta_rotation_aware() instead of apply_delta().
+ROBOT_ROTATION_AWARE = "wetlab_right_arm_rotation_aware"
+ROBOT_DELTA_MASKS["wetlab_right_arm"] = ROBOT_ROTATION_AWARE
 
 
 class RunningStats:
@@ -173,6 +199,32 @@ def apply_delta(actions: np.ndarray, state: np.ndarray, delta_mask: list[bool]) 
     return actions
 
 
+def apply_delta_rotation_aware(actions: np.ndarray, state: np.ndarray) -> np.ndarray:
+    """Delta relative to the current state for the wetlab canonical layout's RIGHT eef
+    block only (the one arm wetlab_smoke_adapter.py ever writes). xyz: element-wise
+    subtraction (a valid delta). rot6d: world-frame relative rotation via
+    n0vtla.policies.rotation_utils.rot6d_delta_world (R_action @ R_state^T -- composing
+    rotation matrices, not subtracting rot6d vectors, which is not a vector space and
+    does not support element-wise delta). Matches n0vtla.transforms.
+    ChunkDeltaToCurrentState's math (the transform actually used at train/serve time),
+    vectorized over (N, horizon) so it's fast enough for fitting norm stats over a
+    whole split.
+
+    actions: (N, horizon, 32); state: (N, 32). The gripper [19:20] and hand [20:26]
+    dims, and the always-zero left-arm block [0:10], are left untouched (already
+    absolute / already zero either way).
+    """
+    actions = actions.copy()
+    xyz_lo, xyz_hi = _canonical_schema.ACTION_SLOTS["right_eef_xyz"]
+    rot_lo, rot_hi = _canonical_schema.ACTION_SLOTS["right_eef_rot6d"]
+
+    actions[..., xyz_lo:xyz_hi] -= state[:, None, xyz_lo:xyz_hi]
+
+    ref = np.broadcast_to(state[:, None, rot_lo:rot_hi], actions[..., rot_lo:rot_hi].shape)
+    actions[..., rot_lo:rot_hi] = rot6d_delta_world(ref, actions[..., rot_lo:rot_hi])
+    return actions
+
+
 def _train_episode_indices(repo: Path) -> set[int] | None:
     """Episode indices tagged split=="train" in meta/episodes.jsonl, or None if the
     dataset has no split tags (e.g. the single-episode smoke output) -- callers
@@ -221,7 +273,10 @@ def compute(specs: list[dict], max_frames: int | None, train_only: bool = False)
                 action = action[:remaining]
 
             actions = action_horizon_sequence(action)
-            actions = apply_delta(actions, state, spec["delta_mask"])
+            if spec["delta_mask"] == ROBOT_ROTATION_AWARE:
+                actions = apply_delta_rotation_aware(actions, state)
+            else:
+                actions = apply_delta(actions, state, spec["delta_mask"])
             state_stats.update(state)
             action_stats.update(actions)
             processed += state.shape[0]
