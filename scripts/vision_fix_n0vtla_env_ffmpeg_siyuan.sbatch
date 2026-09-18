@@ -18,11 +18,14 @@
 # never got it installed).
 #
 # Installs ffmpeg from conda-forge directly into the env prefix (no `conda
-# activate`/`source` needed).
+# activate`/`source` needed). Pinned to major version 7 -- torchcodec's own error
+# message says it only supports FFmpeg versions 4, 5, 6, 7; an unpinned install
+# pulled conda-forge's latest (9.0.1), which is newer than torchcodec supports and
+# would likely fail the same way.
 set -euo pipefail
 
 module load Miniforge3
-conda install -p /scratch/project/prj-02-uq-llms-for-reasoning/yqq/envs/n0vtla -c conda-forge ffmpeg -y
+conda install -p /scratch/project/prj-02-uq-llms-for-reasoning/yqq/envs/n0vtla -c conda-forge "ffmpeg=7" -y
 conda list -p /scratch/project/prj-02-uq-llms-for-reasoning/yqq/envs/n0vtla ffmpeg
 
 echo N0VTLA_ENV_FIX_FFMPEG_DONE
