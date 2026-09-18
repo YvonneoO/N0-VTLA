@@ -5,14 +5,16 @@
 #SBATCH --cpus-per-task=2
 #SBATCH --gres=gpu:0
 #SBATCH --mem=16G
-#SBATCH --time=12:00:00
+#SBATCH --time=01:00:00
 #SBATCH --output=/scratch/project/prj-02-uq-llms-for-reasoning/yqq/logs/n0vtla_upload_t1_vision_%j.log
 #
 # Submitted with --dependency=afterok:<ours_jobid>:<baseline_jobid> so SLURM itself holds
 # this job until BOTH task1_posttrain_ours_vision8gpu and task1_posttrain_baseline_vision8gpu
 # finish successfully -- no polling of squeue/sacct needed. CPU-only (pure file I/O + HF
-# upload), 12h budget since we don't know the aggregate checkpoint size in advance (every
-# saved step -- model+optimizer+metadata -- for BOTH runs, not just the latest).
+# upload). 1h budget (shorter walltime schedules faster / cheaper on the shared queue): 10
+# checkpoint steps per run (save_interval=2000 over num_train_steps=20000 -> 2000..20000),
+# 20 checkpoint dirs total across both runs -- upload of a single N0-VTLA checkpoint's
+# model+optimizer+metadata has comfortably fit under an hour in past runs on this cluster.
 #
 # Uploads EVERY checkpoint step dir for both runs (nothing deleted here -- deletion of the
 # <10k intermediate steps only happens in a separate, manually-triggered step after the
