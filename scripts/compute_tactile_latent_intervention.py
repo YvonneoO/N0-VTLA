@@ -189,9 +189,25 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--smoke", action="store_true")
+    parser.add_argument("--conditions", default="normal,zero,shuffle,oracle",
+                         help="Comma-separated subset of {normal,zero,shuffle,oracle} to run in pass 2. "
+                              "'normal' is always required (baseline for 4a's correlation and 4b's paired "
+                              "diffs). Use '--conditions normal' alone for a fast 4a-only run (~4x cheaper "
+                              "than the full 4-condition pass); the default runs the full 4b intervention "
+                              "table (which also yields 4a as a side effect, at full cost).")
+    parser.add_argument("--checkpoint-every", type=int, default=50,
+                         help="write a partial report to --output every N scored samples during pass 2, "
+                              "so a crash mid-run still leaves real (if incomplete) results on disk")
     args = parser.parse_args()
     if args.output.exists():
         raise FileExistsError(args.output)
+
+    conditions = [c.strip() for c in args.conditions.split(",") if c.strip()]
+    if "normal" not in conditions:
+        raise ValueError("--conditions must include 'normal' (baseline for the correlation and all paired diffs)")
+    for c in conditions:
+        if c not in ("normal", "zero", "shuffle", "oracle"):
+            raise ValueError(f"unknown condition {c!r} -- must be one of normal/zero/shuffle/oracle")
 
     import os
     for var in ("VTLA_ASSET_ID", "VTLA_DATASET_PATH"):
@@ -308,10 +324,68 @@ def main() -> None:
     rng = np.random.default_rng(args.seed)
     derangement = random_derangement(n_pool, rng)
 
-    # ---------------- PASS 2: 4-condition action-loss forward per sample ----------------
-    print(f"=== pass 2/2: intervention forward passes (repeats={repeats}, conditions=4) ===")
-    conditions = ["normal", "zero", "shuffle", "oracle"]
+    # ---------------- PASS 2: action-loss forward per sample, for the requested conditions ----------------
+    print(f"=== pass 2/2: forward passes (repeats={repeats}, conditions={conditions}) ===")
     per_sample_loss = {c: np.full(n_pool, np.nan) for c in conditions}
+
+    def build_report(complete: bool) -> dict:
+        """Assemble the report from whatever per_sample_loss/infonce data exist so far.
+        Called periodically during pass 2 (complete=False, partial data) and once at the
+        end (complete=True) -- always writes to the same --output path, so a crash mid-run
+        still leaves the last partial write on disk instead of nothing."""
+        y = per_sample_loss["normal"]
+        scored_mask = ~np.isnan(y)
+        n_scored = int(scored_mask.sum())
+        if complete:
+            x, y_ = infonce_per_sample, y
+        else:
+            x, y_ = infonce_per_sample[scored_mask], y[scored_mask]
+        if n_scored >= 3:
+            step_corr = dict(
+                n=n_scored, pearson_r=pearson(x, y_), spearman_rho=spearman(x, y_),
+                pearson_p_mc=monte_carlo_permutation_p(x, y_, pearson, n_resamples, args.seed),
+                spearman_p_mc=monte_carlo_permutation_p(x, y_, spearman, n_resamples, args.seed + 1),
+                pearson_ci95=bootstrap_ci(x, y_, pearson, seed=args.seed),
+            )
+        else:
+            step_corr = dict(n=n_scored, note="fewer than 3 scored samples so far -- correlation not computed yet")
+
+        intervention = {"normal": dict(mean_loss=float(np.nanmean(per_sample_loss["normal"])))}
+        comparisons = [c for c in conditions if c != "normal"]
+        raw_p = []
+        for c in comparisons:
+            diffs = (per_sample_loss[c] - per_sample_loss["normal"])[scored_mask]
+            p = paired_sign_flip_p(diffs, n_resamples, args.seed) if len(diffs) >= 3 else None
+            raw_p.append(p if p is not None else 1.0)
+            intervention[c] = dict(
+                mean_loss=float(np.nanmean(per_sample_loss[c])),
+                mean_diff_vs_normal=float(np.mean(diffs)) if len(diffs) else float("nan"),
+                p_sign_flip=p,
+            )
+        if comparisons:
+            holm = holm_correction(raw_p)
+            for c, adj in zip(comparisons, holm):
+                intervention[c]["p_holm_corrected"] = adj if intervention[c]["p_sign_flip"] is not None else None
+
+        return dict(
+            checkpoint=str(args.checkpoint), checkpoint_label=args.checkpoint_label,
+            dataset_root=str(args.dataset_root), smoke=args.smoke, stride=stride, repeats=repeats,
+            conditions=conditions, n_pool=n_pool, n_scored=n_scored, n_resamples=n_resamples,
+            status="complete" if complete else f"partial -- {n_scored}/{n_pool} samples scored, pass 2 still running",
+            per_step_correlation=step_corr,
+            intervention=intervention,
+            limitations=[
+                "Oracle substitution broadcasts the mean-pooled z* to all n_latent token slots -- "
+                "a documented simplification, not the model's native per-token latent structure.",
+                "Shuffle uses one fixed, seeded derangement over this checkpoint's own pool -- one "
+                "specific mismatched pairing per sample, not an average over all possible mismatches.",
+                "Tests a FROZEN action expert's response to a substituted latent, not whether "
+                "training with better latents would help more.",
+                f"Monte Carlo tests ({n_resamples} resamples) approximate exact permutation/sign-flip "
+                "p-values -- exact enumeration is intractable at this n.",
+            ] if not args.smoke else ["SMOKE RUN -- pipeline validation only, stats not meaningful."],
+        )
+
     running_index = 0
     for observation, actions in loader:
         ep_idx = episode_of(running_index)
@@ -339,65 +413,20 @@ def main() -> None:
                     draws[c].append(float(per_sample_scalar.item()))
             for c in conditions:
                 per_sample_loss[c][pool_i] = float(np.mean(draws[c]))
-            if pool_i % 50 == 0:
-                print(f"  scored {pool_i + 1}/{n_pool} samples "
-                      f"(normal={per_sample_loss['normal'][pool_i]:.4f}, "
-                      f"zero={per_sample_loss['zero'][pool_i]:.4f}, "
-                      f"shuffle={per_sample_loss['shuffle'][pool_i]:.4f}, "
-                      f"oracle={per_sample_loss['oracle'][pool_i]:.4f})")
+            if pool_i % args.checkpoint_every == 0:
+                vals = ", ".join(f"{c}={per_sample_loss[c][pool_i]:.4f}" for c in conditions)
+                print(f"  scored {pool_i + 1}/{n_pool} samples ({vals})")
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(json.dumps(build_report(complete=False), indent=2))
         running_index += 1
         if running_index >= total_rows:
             break
 
-    # ---------------- (A) per-step correlation: InfoNCE quality vs. real action loss ----------------
-    x = infonce_per_sample
-    y = per_sample_loss["normal"]
-    step_corr = dict(
-        n=n_pool, pearson_r=pearson(x, y), spearman_rho=spearman(x, y),
-        pearson_p_mc=monte_carlo_permutation_p(x, y, pearson, n_resamples, args.seed),
-        spearman_p_mc=monte_carlo_permutation_p(x, y, spearman, n_resamples, args.seed + 1),
-        pearson_ci95=bootstrap_ci(x, y, pearson, seed=args.seed),
-    )
-
-    # ---------------- (B) intervention table ----------------
-    intervention = {}
-    raw_p = []
-    comparisons = ["zero", "shuffle", "oracle"]
-    for c in comparisons:
-        diffs = per_sample_loss[c] - per_sample_loss["normal"]
-        p = paired_sign_flip_p(diffs, n_resamples, args.seed)
-        raw_p.append(p)
-        intervention[c] = dict(
-            mean_loss=float(np.mean(per_sample_loss[c])),
-            mean_diff_vs_normal=float(np.mean(diffs)),
-            p_sign_flip=p,
-        )
-    holm = holm_correction(raw_p)
-    for c, adj in zip(comparisons, holm):
-        intervention[c]["p_holm_corrected"] = adj
-    intervention["normal"] = dict(mean_loss=float(np.mean(per_sample_loss["normal"])))
-
-    report = dict(
-        checkpoint=str(args.checkpoint), checkpoint_label=args.checkpoint_label,
-        dataset_root=str(args.dataset_root), smoke=args.smoke, stride=stride, repeats=repeats,
-        n_pool=n_pool, n_resamples=n_resamples,
-        per_step_correlation=step_corr,
-        intervention=intervention,
-        limitations=[
-            "Oracle substitution broadcasts the mean-pooled z* to all n_latent token slots -- "
-            "a documented simplification, not the model's native per-token latent structure.",
-            "Shuffle uses one fixed, seeded derangement over this checkpoint's own pool -- one "
-            "specific mismatched pairing per sample, not an average over all possible mismatches.",
-            "Tests a FROZEN action expert's response to a substituted latent, not whether "
-            "training with better latents would help more.",
-            f"Monte Carlo tests ({n_resamples} resamples) approximate exact permutation/sign-flip "
-            "p-values -- exact enumeration is intractable at this n.",
-        ] if not args.smoke else ["SMOKE RUN -- pipeline validation only, stats not meaningful."],
-    )
+    report = build_report(complete=True)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2))
-    print(json.dumps(dict(checkpoint_label=args.checkpoint_label, per_step_correlation=step_corr,
-                           intervention=intervention), indent=2))
+    print(json.dumps(dict(checkpoint_label=args.checkpoint_label, per_step_correlation=report["per_step_correlation"],
+                           intervention=report["intervention"]), indent=2))
     print(f"Full report: {args.output}")
 
 
