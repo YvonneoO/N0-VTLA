@@ -40,6 +40,15 @@ python -c "import jax, torch; print('env check OK: jax', jax.__version__, 'torch
 
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export NCCL_DEBUG=WARN
+# Confirmed root cause 2026-09-17: job 561095 (60pct run) saved checkpoints every 500
+# steps despite config.py's save_interval being 1000 on disk -- get_config()/cli()
+# both returned 1000 when checked directly, but the checkpoint's OWN embedded
+# metadata (dataclasses.asdict(config), the ground truth for what that exact process
+# used) showed save_interval=500. A stale n0vtla/training/__pycache__/config.*.pyc
+# (this clone is shared across many compute-node job launches on a parallel
+# filesystem, where mtime-based bytecode-cache invalidation can go stale) is the
+# leading suspect. Disabling bytecode caching entirely removes this whole bug class.
+export PYTHONDONTWRITEBYTECODE=1
 
 NORM_PATH=/scratch/project/prj-02-uq-llms-for-reasoning/yqq/data/normalization_pad30_per_task_scale.json
 if [[ ! -f "$NORM_PATH" ]]; then

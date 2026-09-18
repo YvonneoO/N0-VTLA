@@ -32,6 +32,11 @@ python -c "import jax, torch; print('env check OK: jax', jax.__version__, 'torch
 
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export NCCL_DEBUG=WARN
+# See vision_train_stage1_online_full_siyuan.sbatch's comment: a stale bytecode
+# cache (n0vtla/training/__pycache__/config.*.pyc) is the leading suspect for a
+# confirmed save_interval mismatch between config.py on disk and what an actual
+# run used. Disabling bytecode caching removes this whole bug class.
+export PYTHONDONTWRITEBYTECODE=1
 
 NORM_PATH=/scratch/project/prj-02-uq-llms-for-reasoning/yqq/data/normalization_pad30_per_task_scale.json
 if [[ ! -f "$NORM_PATH" ]]; then
