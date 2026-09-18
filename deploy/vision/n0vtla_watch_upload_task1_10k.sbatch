@@ -5,17 +5,22 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --gres=gpu:0
 #SBATCH --mem=8G
-#SBATCH --time=04:00:00
+#SBATCH --time=02:00:00
 #SBATCH --output=/scratch/project/prj-02-uq-llms-for-reasoning/yqq/logs/n0vtla_watch_upload_10k_%j.log
 #
 # Watcher, not a completion-dependent job: runs concurrently with the two still-training
 # jobs (task1_posttrain_ours_vision8gpu, task1_posttrain_baseline_vision8gpu) and uploads
 # ONLY the step-10000 checkpoint of each the moment it lands on disk, for an early inference
-# rollout -- doesn't wait for the full 20000-step runs to finish. CPU-only, polls the local
-# filesystem every 120s (cheap; this is the watcher's own allocated compute node, not the
-# shared login node or a tmux pane, so this loop is not the polling pattern the VISION rules
-# warn about). 4h budget: at ~54 steps/min both runs need roughly ~2h to reach step 10000
-# from where they were when this was written, so this leaves ~2x margin.
+# rollout -- doesn't wait for the full 20000-step runs to finish. CPU-only (1 cpu), polls the
+# local filesystem every 120s (cheap; this is the watcher's own allocated compute node, not
+# the shared login node or a tmux pane, so this loop is not the polling pattern the VISION
+# rules warn about). 2h budget: at ~54 steps/min both runs need roughly ~2h to reach step
+# 10000 from where they were when this was written -- tight but this is a cheap job to
+# resubmit if it runs out. Upload-then-delete per checkpoint (mirrors
+# vision_prune_and_upload_stage1_ckpt.sbatch's pattern): `set -uo pipefail` (no `-e`) so a
+# failed upload just gets retried next poll instead of deleting anything; the local dir is
+# only rm -rf'd once `hf upload` itself returns success for that checkpoint. The job exits as
+# soon as BOTH runs' step-10000 have been uploaded+deleted -- no need to keep it around after.
 #
 # train_pytorch.py (see save_checkpoint()) writes to tmp_<step>/ and atomically renames to
 # <step>/ only once the save is fully done, so "the numeric dir exists" is a safe completeness
@@ -60,7 +65,9 @@ while [[ ${#pending[@]} -gt 0 ]]; do
       echo "--- $name step ${STEP} found at $dir, uploading -> qqyang/zihiao_real_test:${HF_DEST_ROOT}/${name}/${STEP} ---"
       if hf upload qqyang/zihiao_real_test "$dir" "${HF_DEST_ROOT}/${name}/${STEP}" \
           --repo-type dataset --token "$HF_TOKEN"; then
-        echo "$name step ${STEP} uploaded OK"
+        echo "$name step ${STEP} uploaded OK -- deleting local copy at $dir"
+        rm -rf "$dir"
+        echo "$name step ${STEP} deleted from VISION"
       else
         echo "$name step ${STEP} upload FAILED, will retry next poll" >&2
         next_pending+=("$name")
