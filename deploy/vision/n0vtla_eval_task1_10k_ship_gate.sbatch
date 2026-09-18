@@ -17,9 +17,10 @@
 # 40-50% reversal rate is noise-dominated and shouldn't go near the real robot.
 #
 # The watcher job already deleted both step-10000 checkpoints from VISION right after uploading
-# them to HF, so this re-downloads just what eval needs (model.safetensors + metadata.pt + the
-# assets/ norm_stats subfolder -- skips optimizer.pt, ~14.3GB/run not needed for inference) into a
-# separate eval_ckpts/ dir, distinct from the training checkpoint_dir.
+# them to HF, so this re-downloads them (whole checkpoint dir -- including optimizer.pt, which
+# eval doesn't need, but `hf download --include` only keeps the LAST occurrence when the flag is
+# repeated, so a single per-checkpoint ** glob is what's actually reliable) into a separate
+# eval_ckpts/ dir, distinct from the training checkpoint_dir.
 #
 # Submit with: sbatch deploy/vision/n0vtla_eval_task1_10k_ship_gate.sbatch
 set -euo pipefail
@@ -47,12 +48,11 @@ if [[ "$WHOAMI" != *"qqyang"* ]]; then
 fi
 
 echo
-echo "=== downloading step-10000 checkpoints (model+metadata+norm_stats only, no optimizer) ==="
+echo "=== downloading step-10000 checkpoints (whole dir -- hf download --include only keeps the LAST" \
+     "occurrence when repeated, so a single ** glob is the reliable way to grab the checkpoint) ==="
 for name in ours baseline; do
   hf download qqyang/zihiao_real_test --repo-type dataset \
-    --include "${HF_SRC_ROOT}/${name}/10000/model.safetensors" \
-    --include "${HF_SRC_ROOT}/${name}/10000/metadata.pt" \
-    --include "${HF_SRC_ROOT}/${name}/10000/assets/**" \
+    --include "${HF_SRC_ROOT}/${name}/10000/**" \
     --local-dir "$EVAL_CKPT_ROOT"
 done
 
