@@ -33,16 +33,18 @@ set -euo pipefail
 
 module load Miniforge3/25.3.0-3
 source /scratch/project/prj-02-uq-llms-for-reasoning/yqq/env.sh
-# `source activate ENVPATH` needs conda's shell function pre-registered (normally done by
-# `conda init` in an interactive login shell's rc file) -- on a fresh non-interactive sbatch
-# shell that registration may not have happened, and it silently falls through to the base
-# Miniforge python (confirmed: diagnostic run on dgx002 showed sys.executable pointing at
-# .../Miniforge3/25.3.0-3/bin/python, python3.12 site-packages, not the n0vtla env's
-# python3.11 -- hence "No module named numpy" even though numpy is genuinely installed in
-# the env). Source conda.sh explicitly and use `conda activate` instead, which doesn't
-# depend on that prior registration.
-source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate /scratch/project/prj-02-uq-llms-for-reasoning/yqq/envs/n0vtla
+# Neither `source activate ENVPATH` nor `conda activate` (after sourcing conda.sh) actually
+# switched the interpreter on the compute nodes this hit (dgx001/dgx002) -- both exited 0 but
+# `which python` still resolved to base Miniforge's python3.12, not the env's python3.11
+# (confirmed via diagnostics: numpy genuinely installed in the env, "No module named numpy"
+# only because the wrong interpreter was running). Root cause not fully pinned down (conda's
+# shell-function activation is apparently unreliable in this non-interactive sbatch context on
+# some nodes), so sidestep it entirely: prepend the env's bin/ to PATH directly instead of
+# relying on any conda activation machinery.
+N0VTLA_ENV=/scratch/project/prj-02-uq-llms-for-reasoning/yqq/envs/n0vtla
+export CONDA_PREFIX="$N0VTLA_ENV"
+export CONDA_DEFAULT_ENV=n0vtla
+export PATH="$N0VTLA_ENV/bin:$PATH"
 
 cd /scratch/project/prj-02-uq-llms-for-reasoning/yqq/N0-VTLA
 
