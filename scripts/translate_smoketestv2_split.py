@@ -1,8 +1,9 @@
 """Translate a wetlab release's own training_split.json (schema
-``wetlab_explicit_split_v1`` or ``wetlab_capture_group_split_v1``, both with
-top-level ``train``/``validation``/``test`` uuid lists) into the manifest
-shape ``build_wetlab_canonical_dataset.py``'s ``split_uuids()`` expects: a
-dict with ``train``, ``val``, ``block_holdout_v1.holdout_episodes`` and
+``wetlab_explicit_split_v1``, ``wetlab_capture_group_split_v1``, or
+``wetlab_episode_window_split_v1``, all with top-level ``train``/``validation``/
+``test`` uuid lists) into the manifest shape
+``build_wetlab_canonical_dataset.py``'s ``split_uuids()`` expects: a dict with
+``train``, ``val``, ``block_holdout_v1.holdout_episodes`` and
 ``block_of_episode``.
 
 Neither known release ships a held-out test split (their own ``test`` lists
@@ -11,6 +12,19 @@ and every uuid maps to itself in ``block_of_episode`` -- that field is only
 consumed by this project's own disjointness/grouping bookkeeping (see
 ``merge()`` in ``build_wetlab_canonical_dataset.py``), not something the
 publisher's fixed split needs to satisfy beyond being present.
+
+``wetlab_episode_window_split_v1`` (task2_soft_hard_sorting_20260918):
+verified its ``train``/``validation``/``test`` entries are still flat episode
+uuid strings (36 chars, matching the release's own episode folder names), same
+shape as the other two schemas -- despite the name, the "window" concept only
+applies to FOUR capture groups whose single continuous recording session was
+chopped into multiple episode uuids straddling train/validation (this
+release's own ``rule`` field: "Episode engaged task windows are disjoint. Four
+full continuous ITW captures cross splits; use only each episode H5 src_idx
+and never arbitrary frames from the full MP4."). That per-episode src_idx
+windowing is already handled generically by wetlab_smoke_adapter.py's
+resolve_episode_window() (see its docstring), so this translator's flat
+uuid-list handling still applies unchanged.
 
 Usage:
   python scripts/translate_smoketestv2_split.py \
@@ -23,7 +37,11 @@ import argparse
 import json
 from pathlib import Path
 
-KNOWN_SCHEMAS = {"wetlab_explicit_split_v1", "wetlab_capture_group_split_v1"}
+KNOWN_SCHEMAS = {
+    "wetlab_explicit_split_v1",
+    "wetlab_capture_group_split_v1",
+    "wetlab_episode_window_split_v1",
+}
 
 
 def translate(source: dict) -> dict:
