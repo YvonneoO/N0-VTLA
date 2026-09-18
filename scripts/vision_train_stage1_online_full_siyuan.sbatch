@@ -6,7 +6,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=700G
 #SBATCH --time=00:20:00
-#SBATCH --output=/scratch/project/prj-02-uq-llms-for-reasoning/yqq/N0-VTLA/stage1_online_siyuan_%j.log
+#SBATCH --output=/scratch/project/prj-02-uq-llms-for-reasoning/yqq/stage1_online_siyuan_%j.log
 #
 # Same Stage-1 online-loader training as scripts/vision_train_stage1_online_full.sbatch
 # (see that file's own header for the design rationale), adapted to run under the
@@ -18,9 +18,18 @@
 # Default --time=00:20:00 is a SMOKE-TEST walltime (short on purpose) -- override with
 # --time=... on the sbatch command line for a real run once the smoke test passes.
 #
+# Runs from yqq/N0-VTLA_scaling_extract (a clone independent of the live yqq/N0-VTLA
+# checkout other jobs on this account use), not yqq/N0-VTLA, so a future git pull for
+# this scaling study never risks a mid-run code-shape mismatch on unrelated jobs --
+# see project memory vision-no-git-pull-during-running-job.
+#
+# Defaults to the 20% data-scaling split (EPISODE_LIST_KEY=20pct); override
+# EPISODE_LIST_KEY=40pct/60pct/80pct for the other scaling-study points, or unset
+# VTLA_ITW_EPISODE_LIST_JSON entirely to fall back to the full raw corpus.
+#
 # Chaining/override pattern identical to vision_train_stage1_online_full.sbatch:
-# NPROC_PER_NODE/EXP_NAME/RESUME/NUM_WORKERS/NUM_TRAIN_STEPS via --export=ALL,...
-#   sbatch --export=ALL,EXP_NAME=<name>,NUM_TRAIN_STEPS=5 scripts/vision_train_stage1_online_full_siyuan.sbatch
+# NPROC_PER_NODE/EXP_NAME/RESUME/NUM_WORKERS/NUM_TRAIN_STEPS/EPISODE_LIST_KEY via --export=ALL,...
+#   sbatch --time=12:00:00 --export=ALL,EXP_NAME=<name>,NUM_TRAIN_STEPS=14000 scripts/vision_train_stage1_online_full_siyuan.sbatch
 set -euo pipefail
 
 source /scratch/project/prj-02-uq-llms-for-reasoning/yqq/env.sh
@@ -32,14 +41,22 @@ python -c "import jax, torch; print('env check OK: jax', jax.__version__, 'torch
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export NCCL_DEBUG=WARN
 
+NORM_PATH=/scratch/project/prj-02-uq-llms-for-reasoning/yqq/data/normalization_pad30_per_task_scale.json
+if [[ ! -f "$NORM_PATH" ]]; then
+  mkdir -p "$(dirname "$NORM_PATH")"
+  hf download qqyang/zihiao_real_test \
+    n0vtla_itw_normalization/normalization_pad30_per_task_scale.json \
+    --repo-type dataset --token "$HF_TOKEN" \
+    --local-dir /scratch/project/prj-02-uq-llms-for-reasoning/yqq/data/_norm_download
+  mv /scratch/project/prj-02-uq-llms-for-reasoning/yqq/data/_norm_download/n0vtla_itw_normalization/normalization_pad30_per_task_scale.json "$NORM_PATH"
+  rm -rf /scratch/project/prj-02-uq-llms-for-reasoning/yqq/data/_norm_download
+fi
+
 export VTLA_ITW_RAW_ROOT=/scratch/project/prj-02-uq-llms-for-reasoning/yqq/data/raw
-# TODO(verify): normalization table path -- phai-lab's copy
-# (haohw/tacWAM/docs/per_task_tactile_scale/normalization_pad30_per_task_scale.json) is
-# NOT reachable from this account (cross-account /scratch is permission-denied). Point
-# this at whatever copy actually exists under this account's own yqq -- confirm the
-# real path before relying on this default.
-export VTLA_ITW_NORMALIZATION="${VTLA_ITW_NORMALIZATION:-/scratch/project/prj-02-uq-llms-for-reasoning/yqq/data/normalization_pad30_per_task_scale.json}"
+export VTLA_ITW_NORMALIZATION="$NORM_PATH"
 export VTLA_PRETRAINED_CHECKPOINT=/scratch/project/prj-02-uq-llms-for-reasoning/yqq/data/n0vtla/n0-vtla-base
+export VTLA_ITW_EPISODE_LIST_JSON="${VTLA_ITW_EPISODE_LIST_JSON:-/scratch/project/prj-02-uq-llms-for-reasoning/yqq/data/itw_scaling_splits.json}"
+export VTLA_ITW_EPISODE_LIST_KEY="${EPISODE_LIST_KEY:-20pct}"
 
 EXP_NAME="${EXP_NAME:-online_siyuan_${SLURM_JOB_ID}}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
@@ -50,7 +67,7 @@ if [[ "${RESUME:-0}" == "1" ]]; then
   RESUME_FLAG=(--resume)
 fi
 
-cd /scratch/project/prj-02-uq-llms-for-reasoning/yqq/N0-VTLA
+cd /scratch/project/prj-02-uq-llms-for-reasoning/yqq/N0-VTLA_scaling_extract
 
 torchrun --standalone --nnodes=1 --nproc_per_node="$NPROC_PER_NODE" \
   scripts/train_stage1_online.py vtla_stage1_predictor_pretrain \
