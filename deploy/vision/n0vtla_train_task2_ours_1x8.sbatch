@@ -17,7 +17,8 @@ cd /scratch/project/prj-02-uq-llms-for-reasoning/yqq/N0-VTLA
 module load Miniforge3/25.3.0-3
 module load CUDA/12.8.0
 source /scratch/project/prj-02-uq-llms-for-reasoning/yqq/env.sh
-source activate /scratch/project/prj-02-uq-llms-for-reasoning/yqq/envs/n0vtla
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate /scratch/project/prj-02-uq-llms-for-reasoning/yqq/envs/n0vtla
 
 DATA_ROOT=/scratch/project/prj-02-uq-llms-for-reasoning/yqq/data/n0vtla
 

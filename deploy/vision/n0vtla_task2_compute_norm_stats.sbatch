@@ -22,7 +22,8 @@ set -euo pipefail
 
 module load Miniforge3/25.3.0-3
 source /scratch/project/prj-02-uq-llms-for-reasoning/yqq/env.sh
-source activate /scratch/project/prj-02-uq-llms-for-reasoning/yqq/envs/n0vtla
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate /scratch/project/prj-02-uq-llms-for-reasoning/yqq/envs/n0vtla
 
 cd /scratch/project/prj-02-uq-llms-for-reasoning/yqq/N0-VTLA
 
