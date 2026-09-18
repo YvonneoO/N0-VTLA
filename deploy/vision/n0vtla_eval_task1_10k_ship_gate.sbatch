@@ -37,6 +37,13 @@ EVAL_CKPT_ROOT="$DATA_ROOT/eval_ckpts/task1_10k"
 RESULTS_DIR=/scratch/project/prj-02-uq-llms-for-reasoning/yqq/N0-VTLA/eval_results/task1_10k
 HF_SRC_ROOT="n0vtla_wetlab_posttrain/post_train_task1_vision8gpu"
 
+# Must match what training exported (n0vtla_train_task1_{ours,baseline}_1x8.sbatch) --
+# LeRobotCanonicalTaskTactileDataConfig.assets.asset_id falls back to "canonical_tactile_task"
+# when VTLA_ASSET_ID is unset, but both checkpoints' assets/ dir is actually named
+# task1_tuberack_train (that's what norm stats were computed/saved under during training).
+export VTLA_DATASET_PATH="$DATA_ROOT/canonical_wetlab_task1_train"
+export VTLA_ASSET_ID=task1_tuberack_train
+
 mkdir -p "$EVAL_CKPT_ROOT" "$RESULTS_DIR"
 
 echo "=== HF auth check (must be qqyang) ==="
