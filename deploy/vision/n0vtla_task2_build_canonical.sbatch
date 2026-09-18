@@ -33,11 +33,20 @@ set -euo pipefail
 
 module load Miniforge3/25.3.0-3
 source /scratch/project/prj-02-uq-llms-for-reasoning/yqq/env.sh
-source activate /scratch/project/prj-02-uq-llms-for-reasoning/yqq/envs/n0vtla
+# `source activate ENVPATH` needs conda's shell function pre-registered (normally done by
+# `conda init` in an interactive login shell's rc file) -- on a fresh non-interactive sbatch
+# shell that registration may not have happened, and it silently falls through to the base
+# Miniforge python (confirmed: diagnostic run on dgx002 showed sys.executable pointing at
+# .../Miniforge3/25.3.0-3/bin/python, python3.12 site-packages, not the n0vtla env's
+# python3.11 -- hence "No module named numpy" even though numpy is genuinely installed in
+# the env). Source conda.sh explicitly and use `conda activate` instead, which doesn't
+# depend on that prior registration.
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate /scratch/project/prj-02-uq-llms-for-reasoning/yqq/envs/n0vtla
 
 cd /scratch/project/prj-02-uq-llms-for-reasoning/yqq/N0-VTLA
 
-echo "=== env diagnostics (numpy import failed on dgx001 in a previous attempt -- narrowing down) ==="
+echo "=== env diagnostics (numpy import failed on dgx001/dgx002 in previous attempts) ==="
 hostname
 which python
 python -c "import sys; print('executable:', sys.executable); print('path:'); [print(' ', p) for p in sys.path]"
