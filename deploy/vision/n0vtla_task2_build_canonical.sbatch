@@ -37,6 +37,12 @@ source activate /scratch/project/prj-02-uq-llms-for-reasoning/yqq/envs/n0vtla
 
 cd /scratch/project/prj-02-uq-llms-for-reasoning/yqq/N0-VTLA
 
+echo "=== env diagnostics (numpy import failed on dgx001 in a previous attempt -- narrowing down) ==="
+hostname
+which python
+python -c "import sys; print('executable:', sys.executable); print('path:'); [print(' ', p) for p in sys.path]"
+python -c "import numpy; print('numpy OK:', numpy.__file__)"
+
 DATA_ROOT=/scratch/project/prj-02-uq-llms-for-reasoning/yqq/data/n0vtla
 RAW_DIR="$DATA_ROOT/wetlab_raw/task2_soft_hard_sorting_20260918"
 SPLIT_MANIFEST="scripts/wetlab_split_task2_v1.json"
