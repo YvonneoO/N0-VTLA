@@ -25,13 +25,23 @@ this script never touches config.data):
     VTLA_ITW_NORMALIZATION     required. Path to a tacWAM-format normalization JSON (either
                                 per-pad or per-task-scale schema; see scripts/itw_pressure.py).
     VTLA_ITW_DATES             optional, comma-separated date subdirs (default: every date
-                                under VTLA_ITW_RAW_ROOT).
+                                under VTLA_ITW_RAW_ROOT). Ignored if VTLA_ITW_EPISODE_LIST_JSON is set.
     VTLA_ITW_MAX_EPISODES      optional int. Caps the episode count via a config.seed-seeded
                                 sample -- for a fast smoke test, NOT a real full-corpus run.
+                                Ignored if VTLA_ITW_EPISODE_LIST_JSON is set.
+    VTLA_ITW_EPISODE_LIST_JSON optional path to a manifest from scripts/build_itw_scaling_splits.py
+                                (a {"raw_root", "splits": {"<key>": [relative episode dirs]}} JSON).
+                                When set, this OVERRIDES VTLA_ITW_DATES/VTLA_ITW_MAX_EPISODES with a
+                                FIXED episode list (no re-sampling per launch) -- for data-scaling
+                                experiments where every run at a given fraction must see the exact
+                                same episodes. Requires VTLA_ITW_EPISODE_LIST_KEY.
+    VTLA_ITW_EPISODE_LIST_KEY  required if VTLA_ITW_EPISODE_LIST_JSON is set -- which key under the
+                                manifest's "splits" to use, e.g. "20pct".
 """
 from __future__ import annotations
 
 import itertools
+import json
 import logging
 import os
 import sys
@@ -69,6 +79,27 @@ def _online_episode_dirs(seed: int) -> list[Path]:
     raw_root = os.environ.get("VTLA_ITW_RAW_ROOT")
     if not raw_root:
         raise ValueError("VTLA_ITW_RAW_ROOT is required for train_stage1_online.py")
+
+    episode_list_json = os.environ.get("VTLA_ITW_EPISODE_LIST_JSON")
+    if episode_list_json:
+        list_key = os.environ.get("VTLA_ITW_EPISODE_LIST_KEY")
+        if not list_key:
+            raise ValueError("VTLA_ITW_EPISODE_LIST_KEY is required when VTLA_ITW_EPISODE_LIST_JSON is set")
+        manifest = json.loads(Path(episode_list_json).read_text())
+        try:
+            rel_paths = manifest["splits"][list_key]
+        except KeyError as e:
+            raise ValueError(f"key {list_key!r} not found in {episode_list_json}'s splits "
+                              f"(available: {sorted(manifest.get('splits', {}))})") from e
+        episodes = [Path(raw_root) / rel for rel in rel_paths]
+        missing = [str(p) for p in episodes if not p.is_dir()]
+        if missing:
+            raise FileNotFoundError(f"{len(missing)} episode dirs from manifest missing under "
+                                     f"{raw_root}: {missing[:5]}{'...' if len(missing) > 5 else ''}")
+        logging.info(f"VTLA_ITW_EPISODE_LIST_JSON={episode_list_json} key={list_key}: "
+                      f"{len(episodes)} fixed episode dirs (no resampling)")
+        return episodes
+
     dates_env = os.environ.get("VTLA_ITW_DATES")
     dates = dates_env.split(",") if dates_env else None
     episodes = _online.list_episode_dirs(raw_root, date_dirs=dates)
