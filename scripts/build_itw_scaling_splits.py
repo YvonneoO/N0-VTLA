@@ -10,6 +10,18 @@ each lower fraction to be a strict subset of the next (20% subset of 40% subset 
 60% subset of 80% subset of 100%), so differences in the resulting scaling curve are
 attributable to how much data was added, not to which episodes got resampled.
 
+Also writes a "held_out" split: the complement of the LARGEST built fraction (default
+80%) in the same shuffled order, i.e. shuffled[n_80pct:]. Because 20/40/60/80pct are
+all PREFIXES of one deterministic shuffle (same seed), this tail slice is, by
+construction, never included in ANY of them -- a scaling-law comparison (checkpoint
+performance vs. data fraction) must score every checkpoint on episodes none of them
+trained on, or a smaller-fraction run's lower training loss is confounded by seeing
+its smaller pool repeated more often over the same step budget, not by learning
+better. Re-running this script with --overwrite and the SAME --seed/--fractions
+reproduces the 20/40/60/80pct keys byte-identically (pure functions of raw_root +
+seed) and is safe even while jobs that already read the old manifest are running --
+they loaded their fixed episode list into memory at startup and never re-read the file.
+
 This corpus (this account's own `yqq/data/raw`) is NOT the same date range as the
 already-completed prj-02-phai-lab full-corpus run (tujian_v5_recent, itw07-23..itw09-10)
 -- it's missing itw07-28/29/30 and has itw09-12/14/15 instead, per user decision on
@@ -63,6 +75,11 @@ def main() -> None:
         key = f"{round(frac * 100)}pct"
         splits[key] = shuffled[:n]
         print(f"{key}: {n} episodes")
+
+    n_max = round(max(args.fractions) * total)
+    splits["held_out"] = shuffled[n_max:]
+    print(f"held_out: {len(splits['held_out'])} episodes (complement of the "
+          f"{round(max(args.fractions) * 100)}pct split)")
 
     manifest = {
         "raw_root": str(raw_root),
