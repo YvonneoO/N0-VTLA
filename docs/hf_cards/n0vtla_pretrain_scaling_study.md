@@ -61,4 +61,27 @@ non-independent adjacent frames, so read it as a plateau, not as "more data hurt
 (0.0047–0.0051 vs 0.0025); the target field is near zero (mean ≈ −1e-5), so v1's small recon value was not
 evidence of good reconstruction.
 
-**v3 (pending).** Task1 post-train-data retrieval; results appended when the jobs finish.
+**v3 (done).** Task1 post-train-data retrieval (i2t; chance top-10 = 0.18% train / 0.33% val / 0.12% pooled;
+CIs = episode bootstrap, in `summary.csv/json`):
+
+| ckpt | train top-10 | train MRR | val top-10 | pooled top-10 | pooled pool_nce |
+|---|---|---|---|---|---|
+| base (no Stage-1) | 0.18% | 0.0016 | 0.62% | 0.14% | 9.031 |
+| 20% | 2.87% | 0.0083 | 2.93% | 2.34% | 8.890 |
+| 40% | 3.11% | 0.0090 | 2.80% | 2.63% | 8.889 |
+| 60% | 3.18% | 0.0108 | 3.13% | 2.58% | 8.884 |
+| 80% | 3.24% | 0.0094 | 3.13% | 2.69% | 8.890 |
+| 100% (ref) | 3.31% | 0.0094 | 4.17% | 2.49% | 8.883 |
+
+1. **Stage-1 clearly helps in the robot domain.** `base` retrieval is at chance (train top-10 0.18% = chance;
+   pool_nce 8.584 ≈ ln 5469 = 8.607). Any Stage-1 checkpoint lifts train top-10 ~16–18x and MRR 5–7x, and lowers
+   pool_nce by 0.145; paired 95% CIs exclude 0 (val and pooled agree in direction).
+2. **Extra data adds little, and unstably.** Train top-10 rises monotonically with data (+0.24 / +0.31 / +0.37 /
+   +0.44 pp vs 20%; CI excludes 0 for 40/80/100%), but the absolute gain is ~0.4 pp, per-checkpoint CIs overlap
+   heavily, val (13 episodes) shows no significant differences and pooled top-10 is non-monotonic. Read it as a weak
+   trend on the train split, not evidence of gains beyond ~20%.
+3. **Absolute transfer is weak** (top-1 0.03–0.4%, positive cosine ~0.15 vs ~0.32 in-domain human held-out).
+
+**Overall.** On human held-out data no metric shows a data-scaling benefit; on robot data Stage-1 itself matters a
+lot but 20→100% adds only a weak, unstable difference. These are proxies — downstream post-train from the merged
+checkpoints decides.
