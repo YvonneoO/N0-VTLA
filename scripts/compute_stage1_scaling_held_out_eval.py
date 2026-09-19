@@ -60,8 +60,14 @@ def main() -> None:
                          help="n0-vtla-base dir or model.safetensors path (VTLA_PRETRAINED_CHECKPOINT).")
     parser.add_argument("--future-frame-offset", type=int, default=50)
     parser.add_argument("--default-prompt", default="Perform the task.")
-    parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--num-workers", type=int, default=2)
+    parser.add_argument("--max-batches", type=int, default=200,
+                         help="Cap on batches scored. ITWOnlineTactileDataset yields one sample per "
+                              "FRAME within an episode, not one per episode -- a 'full epoch' over "
+                              "~7700 held-out episodes is tens of thousands of batches (confirmed: "
+                              "73841 at batch_size=64), not the ~120 a per-episode count would suggest. "
+                              "200 batches (12800 frame-samples) gives a stable mean in well under an "
+                              "hour instead of an eval that would never finish.")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--overwrite", action="store_true")
@@ -114,10 +120,12 @@ def main() -> None:
         future_frame_offset=args.future_frame_offset, default_prompt=args.default_prompt,
     )
     torch_loader = loader._data_loader.torch_loader
-    num_batches = len(torch_loader)
-    if num_batches == 0:
+    epoch_batches = len(torch_loader)
+    if epoch_batches == 0:
         raise ValueError("No complete batch available from the held-out set at this batch size")
-    print(f"One held-out pass: {num_batches} batches of batch_size={config.batch_size}")
+    num_batches = min(epoch_batches, args.max_batches)
+    print(f"Held-out set has {epoch_batches} batches of batch_size={config.batch_size} for one full "
+          f"epoch (one sample per FRAME, not per episode); scoring the first {num_batches} of them.")
 
     policy = N0VTLAPolicy(model_cfg).to(device)
     base_weights = args.base_checkpoint / "model.safetensors" if args.base_checkpoint.is_dir() else args.base_checkpoint
@@ -173,6 +181,7 @@ def main() -> None:
         "checkpoint_step": loaded_step,
         "episode_list_key": args.episode_list_key,
         "num_held_out_episodes": len(episode_dirs),
+        "epoch_batches_available": epoch_batches,
         "num_batches_scored": len(infos),
         "num_batches_skipped_empty": num_batches - len(infos),
         "total_valid_samples": int(total_valid),
