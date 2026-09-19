@@ -29,7 +29,8 @@ STAGE="$YQQ/data/_stage_scaling_eval_upload"
 HF_DEST="n0vtla_pretrain_scaling_study/held_out_eval_results"
 : "${EVAL_JOBIDS:?EVAL_JOBIDS is required, e.g. \"562817 562818\"}"
 
-WHOAMI=$(hf auth whoami)
+HF=$YQQ/envs/n0vtla/bin/hf
+WHOAMI=$($HF auth whoami)
 echo "hf auth whoami: $WHOAMI"
 if [[ "$WHOAMI" != *"qqyang"* ]]; then
   echo "ERROR: expected qqyang, got '$WHOAMI'" >&2
@@ -66,7 +67,7 @@ with open(stage / "summary.csv", "w", newline="") as f:
 print((stage / "summary.csv").read_text())
 PY
 
-hf upload qqyang/zihiao_real_test "$STAGE" "$HF_DEST" --repo-type dataset --token "$HF_TOKEN"
+$HF upload qqyang/zihiao_real_test "$STAGE" "$HF_DEST" --repo-type dataset --token "$HF_TOKEN"
 echo "https://huggingface.co/datasets/qqyang/zihiao_real_test/tree/main/${HF_DEST}"
 
 rm -rf "$STAGE"
