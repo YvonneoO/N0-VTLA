@@ -139,17 +139,25 @@ def main() -> None:
 
     model.eval()
     infos = []
-    with torch.no_grad():
-        for observation, _actions in itertools.islice(loader, num_batches):
-            import jax
+    import jax
+    import time
 
+    start = time.time()
+    with torch.no_grad():
+        for batch_idx, (observation, _actions) in enumerate(itertools.islice(loader, num_batches), start=1):
             observation = jax.tree.map(lambda x: x.to(device), observation)  # noqa: PLW2901
             model(observation)
             raw_policy = model.policy
             info = dict(raw_policy._last_loss_parts)
             if info.get("stage1_valid_count", 0) == 0:
+                print(f"[{batch_idx}/{num_batches}] skipped (0 valid targets)", flush=True)
                 continue
             infos.append(info)
+            elapsed = time.time() - start
+            rate = elapsed / batch_idx
+            eta = rate * (num_batches - batch_idx)
+            print(f"[{batch_idx}/{num_batches}] stage1_total={info['stage1_total']:.4f} "
+                  f"elapsed={elapsed:.0f}s rate={rate:.2f}s/batch eta={eta:.0f}s", flush=True)
 
     if not infos:
         raise RuntimeError("Every held-out batch had zero valid future-tactile targets")
