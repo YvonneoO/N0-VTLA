@@ -46,7 +46,7 @@ and a fixed random subsample is used). Lower is better for losses.
 
 ### Results and interpretation
 **v1 (done).** Held-out `stage1_nce` (lower is better): 20%=3.8001 · 40%=3.8021 · 60%=3.8050 · 100%(ref)=3.7995;
-`stage1_recon` ≈ 0.0036–0.0040 for all. Differences (≤0.005 nce) are non-monotonic and within noise: this
+`stage1_recon` ≈ 0.0034–0.0040 for all. Differences (≤0.005 nce) are non-monotonic and within noise: this
 protocol shows **no data-scaling trend**. Adding 80% (`stage1_nce`=3.8014) does not change this. Contributing factors: temperature 1 with cosine logits compresses
 InfoNCE's dynamic range (achievable floor ≈ 3.1 vs chance 4.08, and all models sit at ~3.80, i.e. close to
 chance), and the 8x8 recon L1 is tiny/saturated (contributes ~0.002 of the total). Training curves plateau
