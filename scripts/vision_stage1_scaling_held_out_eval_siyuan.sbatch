@@ -29,6 +29,8 @@ export PYTHONDONTWRITEBYTECODE=1
 : "${EXP_NAME:?EXP_NAME is required, e.g. stage1_online_20pct}"
 : "${DATA_FRACTION:?DATA_FRACTION is required, e.g. 0.2}"
 CHECKPOINT_LABEL="${CHECKPOINT_LABEL:-${EXP_NAME#stage1_online_}}"
+# v2 reports (with pool retrieval + recon baselines) go to their own dir so the v1 JSONs stay intact.
+OUT_DIR="${OUT_DIR:-/scratch/project/prj-02-uq-llms-for-reasoning/yqq/data/stage1_scaling_held_out_v2}"
 
 cd /scratch/project/prj-02-uq-llms-for-reasoning/yqq/N0-VTLA_scaling_extract
 
@@ -42,7 +44,7 @@ cd /scratch/project/prj-02-uq-llms-for-reasoning/yqq/N0-VTLA_scaling_extract
   --raw-root /scratch/project/prj-02-uq-llms-for-reasoning/yqq/data/raw \
   --normalization /scratch/project/prj-02-uq-llms-for-reasoning/yqq/data/normalization_pad30_per_task_scale.json \
   --base-checkpoint /scratch/project/prj-02-uq-llms-for-reasoning/yqq/data/n0vtla/n0-vtla-base \
-  --output "/scratch/project/prj-02-uq-llms-for-reasoning/yqq/data/stage1_scaling_held_out/${CHECKPOINT_LABEL}.json" \
+  --output "${OUT_DIR}/${CHECKPOINT_LABEL}.json" \
   --overwrite
 
 echo VISION_STAGE1_SCALING_EVAL_DONE

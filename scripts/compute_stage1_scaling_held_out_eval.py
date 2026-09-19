@@ -68,6 +68,9 @@ def main() -> None:
                               "73841 at batch_size=64), not the ~120 a per-episode count would suggest. "
                               "200 batches (12800 frame-samples) gives a stable mean in well under an "
                               "hour instead of an eval that would never finish.")
+    parser.add_argument("--contact-quantile", type=float, default=0.9,
+                         help="Cells of the pooled target field above this quantile count as 'contact' "
+                              "for the contact-region recon baselines.")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--overwrite", action="store_true")
@@ -149,18 +152,46 @@ def main() -> None:
     infos = []
     import jax
     import time
+    import torch.nn.functional as F
 
+    # Capture (z, z*, valid) and the recon-head input/target by wrapping the policy's own
+    # methods here, so the model code (shared with running training jobs) stays untouched.
+    raw = model.policy
+    cap: dict = {}
+    orig_nce = raw._stage1_infonce_loss
+    orig_bft = raw._build_future_target
+
+    def nce_hook(z, z_star, valid):
+        cap["z"], cap["z_star"], cap["valid"] = z.detach(), z_star.detach(), valid.detach()
+        return orig_nce(z, z_star, valid)
+
+    def bft_hook(*a, **k):
+        out = orig_bft(*a, **k)
+        cap["dbar_field"] = out[1].detach()
+        return out
+
+    raw._stage1_infonce_loss = nce_hook
+    raw._build_future_target = bft_hook
+    raw.tactile_recon_head.register_forward_hook(lambda m, i, o: cap.__setitem__("pred", o.detach()))
+    grid = raw.tactile_recon_head.grid
+
+    hz_all, hs_all, pred_all, tgt_all = [], [], [], []
     start = time.time()
     with torch.no_grad():
         for batch_idx, (observation, _actions) in enumerate(itertools.islice(loader, num_batches), start=1):
             observation = jax.tree.map(lambda x: x.to(device), observation)  # noqa: PLW2901
             model(observation)
-            raw_policy = model.policy
-            info = dict(raw_policy._last_loss_parts)
+            info = dict(raw._last_loss_parts)
             if info.get("stage1_valid_count", 0) == 0:
                 print(f"[{batch_idx}/{num_batches}] skipped (0 valid targets)", flush=True)
                 continue
             infos.append(info)
+            v = cap["valid"].bool()
+            hz_all.append(F.normalize(cap["z"].float().mean(dim=1)[v], dim=-1))
+            hs_all.append(F.normalize(cap["z_star"].float().mean(dim=1)[v], dim=-1))
+            gray = cap["dbar_field"].float().mean(dim=1, keepdim=True)
+            tgt_all.append(F.adaptive_avg_pool2d(gray, grid).squeeze(1)[v])
+            pred_all.append(cap["pred"].float()[v])
             elapsed = time.time() - start
             rate = elapsed / batch_idx
             eta = rate * (num_batches - batch_idx)
@@ -175,7 +206,61 @@ def main() -> None:
         k: float(sum(i[k] * i["stage1_valid_count"] for i in infos) / total_valid)
         for k in ("stage1_nce", "stage1_recon", "stage1_total")
     }
+    # Pool-wide retrieval: every valid sample's predicted latent (query) against ALL valid
+    # real-future latents (gallery), not just its own batch's ~59 -- far more sensitive than
+    # batch InfoNCE (temperature 1 + cosine logits compress that loss's dynamic range).
+    hz, hs = torch.cat(hz_all), torch.cat(hs_all)
+    n_pool = hz.shape[0]
+    sim = hz @ hs.t()
+    diag = sim.diagonal()
+    rank_i2t = (sim > diag[:, None]).sum(1)
+    rank_t2i = (sim.t() > diag[:, None]).sum(1)
+    labels = torch.arange(n_pool, device=sim.device)
+    retrieval = {
+        "pool_size": int(n_pool),
+        "chance_top1": 1.0 / n_pool,
+        "pool_nce": float(0.5 * (F.cross_entropy(sim, labels) + F.cross_entropy(sim.t(), labels))),
+        "mean_pos_cos": float(diag.mean()),
+        "mean_neg_cos": float((sim.sum() - diag.sum()) / (n_pool * n_pool - n_pool)),
+    }
+    for name, rank in (("i2t", rank_i2t), ("t2i", rank_t2i)):
+        retrieval[f"{name}_top1"] = float((rank < 1).float().mean())
+        retrieval[f"{name}_top5"] = float((rank < 5).float().mean())
+        retrieval[f"{name}_top10"] = float((rank < 10).float().mean())
+        retrieval[f"{name}_top100"] = float((rank < 100).float().mean())
+        retrieval[f"{name}_mrr"] = float((1.0 / (rank.float() + 1)).mean())
+        retrieval[f"{name}_median_rank"] = float(rank.float().median())
+    del sim
+
+    # Recon vs trivial baselines: the model's L1 only means something next to what predicting
+    # zeros / the pool-mean field would score on the same 8x8 target.
+    pred, tgt = torch.cat(pred_all), torch.cat(tgt_all)
+    thr = float(torch.quantile(tgt.flatten()[:: max(1, tgt.numel() // 1_000_000)], args.contact_quantile))
+    contact = tgt > thr
+    mean_field = tgt.mean(dim=0, keepdim=True)
+    scalar_mean = tgt.mean()
+
+    def l1(a, b, mask=None):
+        d = (a - b).abs()
+        return float(d[mask].mean()) if mask is not None else float(d.mean())
+
+    recon_baselines = {
+        "target_mean": float(tgt.mean()), "target_std": float(tgt.std()), "target_max": float(tgt.max()),
+        "contact_threshold": thr, "contact_quantile": args.contact_quantile,
+        "contact_cell_frac": float(contact.float().mean()),
+        "l1_model": l1(pred, tgt), "l1_zero": l1(torch.zeros_like(tgt), tgt),
+        "l1_scalar_mean": l1(scalar_mean.expand_as(tgt), tgt), "l1_pool_mean_field": l1(mean_field.expand_as(tgt), tgt),
+        "contact_l1_model": l1(pred, tgt, contact), "contact_l1_zero": l1(torch.zeros_like(tgt), tgt, contact),
+        "contact_l1_pool_mean_field": l1(mean_field.expand_as(tgt), tgt, contact),
+    }
+    recon_baselines["skill_vs_pool_mean_field"] = 1.0 - recon_baselines["l1_model"] / recon_baselines["l1_pool_mean_field"]
+    recon_baselines["contact_skill_vs_pool_mean_field"] = (
+        1.0 - recon_baselines["contact_l1_model"] / recon_baselines["contact_l1_pool_mean_field"]
+    )
+
     report = {
+        "retrieval": retrieval,
+        "recon_baselines": recon_baselines,
         "checkpoint_label": args.checkpoint_label,
         "data_fraction": args.data_fraction,
         "checkpoint_step": loaded_step,

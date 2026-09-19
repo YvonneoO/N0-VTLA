@@ -24,9 +24,9 @@ set -euo pipefail
 source /scratch/project/prj-02-uq-llms-for-reasoning/yqq/env.sh
 
 YQQ=/scratch/project/prj-02-uq-llms-for-reasoning/yqq
-RES_DIR="$YQQ/data/stage1_scaling_held_out"
+RES_DIR="${RES_DIR:-$YQQ/data/stage1_scaling_held_out}"
 STAGE="$YQQ/data/_stage_scaling_eval_upload"
-HF_DEST="n0vtla_pretrain_scaling_study/held_out_eval_results"
+HF_DEST="${HF_DEST:-n0vtla_pretrain_scaling_study/held_out_eval_results}"
 : "${EVAL_JOBIDS:?EVAL_JOBIDS is required, e.g. \"562817 562818\"}"
 
 HF=$YQQ/envs/n0vtla/bin/hf
