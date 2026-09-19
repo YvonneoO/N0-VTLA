@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=n0vtla_smoke_t2_ours
+#SBATCH --job-name=n0vtla_smoke_t3_ours
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=2
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
 #SBATCH --time=00:30:00
-#SBATCH --output=/scratch/project/prj-02-uq-llms-for-reasoning/yqq/logs/n0vtla_smoke_t2_ours_%j.log
+#SBATCH --output=/scratch/project/prj-02-uq-llms-for-reasoning/yqq/logs/n0vtla_smoke_t3_ours_%j.log
 #
 # Task3 mirror of n0vtla_smoke_task1_ours.sbatch -- same everything, dataset swapped.
 #
