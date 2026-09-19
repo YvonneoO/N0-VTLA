@@ -14,9 +14,11 @@
 # ever pulled onto VISION. Same pipeline, same tools (wetlab_smoke_adapter.py via
 # build_wetlab_canonical_dataset.py / fit_wetlab_tactile_norm.py), just run here.
 #
-# TASK_NAME / TASK_DESC are TODO placeholders (guarded above): fill from Task3's robot/manifest.json
-# task.name and dataset card. Verify the split schema (translate_smoketestv2_split.py KNOWN_SCHEMAS)
-# and whether --skip-success-label-check is still needed (trial.label) before submitting.
+# Verified on the downloaded release: split schema wetlab_episode_window_split_v1 (already in
+# KNOWN_SCHEMAS), 61 admitted episodes (54 train / 7 val / 0 test), manifest task.name=whiteboard_erase_v1
+# on all 61, trial.label "success" on 58 and null on 3 -> --skip-success-label-check stays (admission is
+# decided by training_split.json / admission_index.json). The README rule "do not join across invalid
+# rows / clutch-off periods" is what resolve_episode_window() + contiguous_runs() already do.
 #
 # Submit with: sbatch --dependency=afterok:<download_jobid> deploy/vision/n0vtla_task3_build_canonical.sbatch
 set -euo pipefail
@@ -48,10 +50,9 @@ DATA_ROOT=/scratch/project/prj-02-uq-llms-for-reasoning/yqq/data/n0vtla
 RAW_DIR="$DATA_ROOT/wetlab_raw/task3_whiteboard_erasing_20260918"
 SPLIT_MANIFEST="scripts/wetlab_split_task3_v1.json"
 NORM_PATH="$DATA_ROOT/wetlab_tactile_norm_task3_v1.json"
-TASK_NAME="TODO_FROM_MANIFEST"   # must equal robot/manifest.json task.name; verify on VISION before submitting
-TASK_DESC="TODO_FROM_DATASET_CARD"
+TASK_NAME="whiteboard_erase_v1"   # robot/manifest.json task.name on all 61 episodes (verified)
+TASK_DESC="Pick up the cloth and erase the marker traces from the whiteboard."
 
-if [[ "$TASK_NAME" == TODO* || "$TASK_DESC" == TODO* ]]; then echo "ERROR: fill TASK_NAME/TASK_DESC first" >&2; exit 2; fi
 
 echo "=== [1/4] translating training_split.json -> $SPLIT_MANIFEST ==="
 if [[ -f "$SPLIT_MANIFEST" ]]; then
