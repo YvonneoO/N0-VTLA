@@ -22,6 +22,9 @@ module load Miniforge3/25.3.0-3
 module load CUDA/12.8.0
 source $YQQ/env.sh
 source activate $YQQ/envs/n0vtla
+# The submitting shell may have another venv active (its PATH is inherited); pin the interpreter.
+PY=$YQQ/envs/n0vtla/bin/python
+export PATH="$YQQ/envs/n0vtla/bin:$PATH"
 
 export HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0
 export HF_HOME=$YQQ/N0-VTLA/models/huggingface
@@ -45,13 +48,13 @@ for cell in $CELLS; do
   out="$OUT_DIR/${label}.json"
   [[ -f "$out" ]] && { echo "SKIP $label (exists)"; continue; }
   echo "=== $label ==="
-  python scripts/compute_posttrain_held_out_loss.py \
+  $PY scripts/compute_posttrain_held_out_loss.py \
     --checkpoint "checkpoints/vtla_tactile_posttrain/${task}_posttrain_s1_${pct}_10k/${STEP}" \
     --checkpoint-label "$label" --dataset-root "$ds" --asset-id "$asset" --output "$out" \
     || echo "FAILED $label"
 done
 
-python - "$OUT_DIR" <<'PY'
+$PY - "$OUT_DIR" <<'PY'
 import csv, json, sys
 from pathlib import Path
 d = Path(sys.argv[1])
