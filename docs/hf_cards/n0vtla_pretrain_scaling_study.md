@@ -86,9 +86,10 @@ CIs = episode bootstrap, in `summary.csv/json`):
    trend on the train split, not evidence of gains beyond ~20%.
 3. **Absolute transfer is weak** (top-1 0.03–0.4%, positive cosine ~0.15 vs ~0.32 in-domain human held-out).
 
-**Overall.** On human held-out data no metric shows a data-scaling benefit; on robot data Stage-1 itself matters a
-lot but 20→100% adds only a weak, unstable difference. These are proxies; post-train and its offline evaluation follow
-below, and real-robot rollouts (hardware team) decide.
+**Overall (mid-train evaluations).** On human held-out data no metric shows a data-scaling benefit (20-100% is a plateau);
+on robot Task1 data mid-train itself matters a lot (the official base is at chance) but 20->100% adds only a weak,
+unstable difference. These are proxies; post-train and its offline evaluation are in `n0vtla_scaling_posttrain/`
+(next section of this card), and real-robot rollouts (hardware team) decide.
 
 ---
 
@@ -139,3 +140,19 @@ flat at 13.1-13.3 (smoke_test_v2) and 16.4-17.2 (Task1) counts vs 228 / 280 for 
    for the 100% (11.71 mm, 13.0 counts). The 0% (older data) fails on smoke_test_v2 (38.8 mm, worse than no motion).
 
 Limits: 7 / 13 held-out episodes, one seed per fraction, final checkpoint only, and offline fit is not closed-loop success.
+
+### Overall conclusion of the scaling study
+**Mid-train itself matters, but going from 20% to 100% human data adds little or nothing we can resolve.**
+- *Mid-train evaluations, human held-out:* every metric plateaus over 20-100%.
+- *Mid-train evaluations, robot Task1 data (v3):* having mid-train at all is a large effect (base retrieval is at chance),
+  while 20->100% adds only a weak, unstable difference.
+- *After post-train, offline eval:* held-out action loss and open-loop sampled error show no measurable effect of the
+  20-80% data quantity on either task (differences within one standard error, not monotonic). On Task1 not even
+  mid-train vs none (0% vs 100%) is distinguishable, i.e. post-training washes the difference out offline, while the
+  policies are clearly useful (sampled xyz error ~30% / ~68% below the no-motion baseline).
+
+Caveats: only 7 / 13 held-out episodes, one seed per fraction and the final checkpoint only, so this means "no difference
+visible", not "no difference"; offline fit is not closed-loop success, so real-robot rollouts (hardware team) decide;
+the smoke_test_v2 0% / 100% references are not comparable in total loss, so that task rests on the 20-80% comparison.
+If rollouts also fail to separate the fractions, the conclusion is: mid-train helps, but 20->80% more data gives no
+measurable downstream gain.
