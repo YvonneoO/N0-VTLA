@@ -13,6 +13,8 @@
 # canonical_wetlab_task1_val (13 episodes), each with its own TRAIN asset's normalization.
 # One GPU, checkpoints scored one after another; writes <label>.json per checkpoint and
 # summary.csv into OUT_DIR. Runs from the live N0-VTLA checkout (same code the runs trained with).
+# 0pct/100pct = official-base / Stage-1-human-14000 post-train references (task1: HF post_train_task1_vision8gpu
+# baseline/ours; sv2: new VISION 10k baseline run / HF human_data_post_train_v2). Only the 10000-step ckpt.
 #   sbatch [--export=ALL,STEP=10000,CELLS="sv2:20pct task1:20pct"] deploy/vision/n0vtla_heldout_loss_scaling_posttrain_siyuan.sbatch
 set -uo pipefail
 
@@ -33,9 +35,10 @@ export VTLA_ATTN_IMPL=eager VTLA_PREFIX_CACHE=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 DATA=$YQQ/data/n0vtla
-OUT_DIR="${OUT_DIR:-$YQQ/data/scaling_posttrain_heldout_loss}"
+OUT_DIR="${OUT_DIR:-$YQQ/data/scaling_posttrain_heldout_loss_v2}"
 STEP="${STEP:-10000}"
-CELLS="${CELLS:-sv2:20pct sv2:40pct sv2:60pct sv2:80pct task1:20pct task1:40pct task1:60pct task1:80pct}"
+CELLS="${CELLS:-sv2:0pct sv2:20pct sv2:40pct sv2:60pct sv2:80pct sv2:100pct task1:0pct task1:20pct task1:40pct task1:60pct task1:80pct task1:100pct}"
+REF=$DATA/eval_ckpts
 mkdir -p "$OUT_DIR"
 
 for cell in $CELLS; do
@@ -47,9 +50,16 @@ for cell in $CELLS; do
   label="${task}_${pct}"
   out="$OUT_DIR/${label}.json"
   [[ -f "$out" ]] && { echo "SKIP $label (exists)"; continue; }
-  echo "=== $label ==="
+  case "$label" in
+    task1_0pct)   ckpt="$REF/task1_10k/n0vtla_wetlab_posttrain/post_train_task1_vision8gpu/baseline/${STEP}" ;;
+    task1_100pct) ckpt="$REF/task1_10k/n0vtla_wetlab_posttrain/post_train_task1_vision8gpu/ours/${STEP}" ;;
+    sv2_100pct)   ckpt="$REF/sv2_100pct/n0vtla_wetlab_posttrain/human_data_post_train_v2/checkpoint_${STEP}" ;;
+    sv2_0pct)     ckpt="checkpoints/vtla_tactile_posttrain/sv2_posttrain_base_10k/${STEP}" ;;
+    *)            ckpt="checkpoints/vtla_tactile_posttrain/${task}_posttrain_s1_${pct}_10k/${STEP}" ;;
+  esac
+  echo "=== $label ($ckpt) ==="
   $PY scripts/compute_posttrain_held_out_loss.py \
-    --checkpoint "checkpoints/vtla_tactile_posttrain/${task}_posttrain_s1_${pct}_10k/${STEP}" \
+    --checkpoint "$ckpt" \
     --checkpoint-label "$label" --dataset-root "$ds" --asset-id "$asset" --output "$out" \
     || echo "FAILED $label"
 done

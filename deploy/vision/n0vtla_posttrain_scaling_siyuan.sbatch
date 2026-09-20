@@ -34,8 +34,9 @@ case "$TASK" in
   sv2)   export VTLA_DATASET_PATH="$DATA_ROOT/canonical_wetlab_smoketestv2_train"; export VTLA_ASSET_ID=wetlab_smoketestv2_train ;;
   *) echo "unknown TASK=$TASK" >&2; exit 1 ;;
 esac
-export VTLA_PRETRAINED_CHECKPOINT="$DATA_ROOT/n0-vtla-base_plus_stage1_scaling_${LABEL}_14000"
-export EXP_NAME="${TASK}_posttrain_s1_${LABEL}_10k"
+# PRETRAINED overrides the merged Stage-1 ckpt (e.g. $DATA_ROOT/n0-vtla-base for the 0% cell, LABEL=base)
+export VTLA_PRETRAINED_CHECKPOINT="${PRETRAINED:-$DATA_ROOT/n0-vtla-base_plus_stage1_scaling_${LABEL}_14000}"
+export EXP_NAME="${EXP_NAME_OVERRIDE:-${TASK}_posttrain_s1_${LABEL}_10k}"
 export NPROC_PER_NODE=8
 export HF_HUB_OFFLINE=0
 export TRANSFORMERS_OFFLINE=0
