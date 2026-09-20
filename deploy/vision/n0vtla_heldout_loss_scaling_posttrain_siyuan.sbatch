@@ -14,7 +14,8 @@
 # One GPU, checkpoints scored one after another; writes <label>.json per checkpoint and
 # summary.csv into OUT_DIR. Runs from the live N0-VTLA checkout (same code the runs trained with).
 # 0pct/100pct = official-base / Stage-1-human-14000 post-train references (task1: HF post_train_task1_vision8gpu
-# baseline/ours; sv2: new VISION 10k baseline run / HF human_data_post_train_v2). Only the 10000-step ckpt.
+# baseline/ours 10000; sv2 100%: HF human_data_post_train_v2 10000; sv2 0%: HF checkpoint_20000 = official base
+# post-trained 20k steps on the OLD smoke_test data with its OWN norm stats (asset wetlab_v2_train), scored on sv2 dev).
 #   sbatch [--export=ALL,STEP=10000,CELLS="sv2:20pct task1:20pct"] deploy/vision/n0vtla_heldout_loss_scaling_posttrain_siyuan.sbatch
 set -uo pipefail
 
@@ -54,7 +55,7 @@ for cell in $CELLS; do
     task1_0pct)   ckpt="$REF/task1_10k/n0vtla_wetlab_posttrain/post_train_task1_vision8gpu/baseline/${STEP}" ;;
     task1_100pct) ckpt="$REF/task1_10k/n0vtla_wetlab_posttrain/post_train_task1_vision8gpu/ours/${STEP}" ;;
     sv2_100pct)   ckpt="$REF/sv2_100pct/n0vtla_wetlab_posttrain/human_data_post_train_v2/checkpoint_${STEP}" ;;
-    sv2_0pct)     ckpt="checkpoints/vtla_tactile_posttrain/sv2_posttrain_base_10k/${STEP}" ;;
+    sv2_0pct)     ckpt="$REF/sv2_0pct_old/n0vtla_wetlab_posttrain/checkpoint_20000"; asset=wetlab_v2_train ;;
     *)            ckpt="checkpoints/vtla_tactile_posttrain/${task}_posttrain_s1_${pct}_10k/${STEP}" ;;
   esac
   echo "=== $label ($ckpt) ==="
