@@ -81,4 +81,5 @@ with open(d / "summary.csv", "w", newline="") as f:
                     m["sample_hand_mae"]["mean"], m["sample_hand_mae"]["episode_se"], m["zero_hand_mae"]["mean"],
                     m["sample_rot6d_mae"]["mean"]])
 print((d / "summary.csv").read_text())
-PYecho OPEN_LOOP_ERR_DONE
+PY
+echo OPEN_LOOP_ERR_DONE
