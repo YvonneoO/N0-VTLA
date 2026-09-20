@@ -85,6 +85,7 @@ def main() -> None:
     print(f"=== held-out rows={total_rows} episodes={len(episodes)} stride={args.stride} repeats={args.repeats} ===", flush=True)
 
     per_episode: dict[int, list[float]] = {i: [] for i in range(len(episodes))}
+    per_episode_hd: dict[int, list[np.ndarray]] = {i: [] for i in range(len(episodes))}  # (H, D) per scored row
     n_scored = 0
     for row, (observation, actions) in enumerate(loader):
         if row >= total_rows or (args.max_rows and row >= args.max_rows):
@@ -94,19 +95,37 @@ def main() -> None:
         ep = int(np.searchsorted(boundaries, row, side="right") - 1)
         observation = jax.tree.map(lambda x: x.to(device), observation)
         actions_t = actions.to(torch.float32).to(device)
-        draws = []
+        draws, draws_hd = [], []
         for r in range(args.repeats):
             torch.manual_seed(args.seed * 100_000 + row * 10 + r)
             with torch.no_grad():
                 losses = model(observation, actions_t)
             draws.append(float(losses.reshape(losses.shape[0], -1).mean(dim=1).item()))
+            draws_hd.append(losses[0].float().cpu().numpy())
         per_episode[ep].append(float(np.mean(draws)))
+        per_episode_hd[ep].append(np.mean(draws_hd, axis=0))
         n_scored += 1
         if n_scored % 100 == 0:
             print(f"  scored {n_scored} rows (row {row}/{total_rows})", flush=True)
 
-    ep_rows = [dict(episode_index=i, length=lengths[i], n_samples=len(v),
-                    mean_action_loss=float(np.mean(v)) if v else float("nan")) for i, v in per_episode.items()]
+    # Action layout right_eef_mm_columns6d_10_19_revo2_raw6_20_26_v1: xyz [10:13], rot6d [13:19],
+    # hand (6 Revo2 motor targets) [20:26]; the other dims are zero padding. Losses are in the
+    # normalized (delta-EEF) space the model trains in, elementwise (horizon, dim).
+    groups = {"xyz": slice(10, 13), "rot6d": slice(13, 19), "hand": slice(20, 26)}
+    ep_hd = {i: np.mean(v, axis=0) for i, v in per_episode_hd.items() if v}  # (H, D)
+    ep_rows = []
+    for i, v in per_episode.items():
+        row_d = dict(episode_index=i, length=lengths[i], n_samples=len(v),
+                     mean_action_loss=float(np.mean(v)) if v else float("nan"))
+        if i in ep_hd:
+            row_d["group_loss"] = {g: float(ep_hd[i][:, sl].mean()) for g, sl in groups.items()}
+        ep_rows.append(row_d)
+    hd_macro = np.mean([ep_hd[i] for i in ep_hd], axis=0)  # (H, D), mean over episodes
+    by_group = {g: dict(mean=float(hd_macro[:, sl].mean()),
+                        episode_se=float(np.std([ep_hd[i][:, sl].mean() for i in ep_hd], ddof=1) / np.sqrt(len(ep_hd)))
+                        if len(ep_hd) > 1 else float("nan"))
+                for g, sl in groups.items()}
+    by_horizon = {g: [float(x) for x in hd_macro[:, sl].mean(axis=1)] for g, sl in groups.items()}
     ep_means = np.array([r["mean_action_loss"] for r in ep_rows if r["n_samples"]])
     all_losses = np.array([x for v in per_episode.values() for x in v])
     report = dict(
@@ -116,6 +135,7 @@ def main() -> None:
         n_scored_rows=n_scored, mean_action_loss_micro=float(all_losses.mean()),
         mean_action_loss_macro=float(ep_means.mean()),
         episode_se=float(ep_means.std(ddof=1) / np.sqrt(len(ep_means))) if len(ep_means) > 1 else float("nan"),
+        by_group=by_group, by_horizon=by_horizon,
         per_episode=ep_rows,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
