@@ -1,4 +1,8 @@
-## n0vtla_pretrain_scaling_study/ — Stage-1 human-ITW data-scaling study
+## n0vtla_pretrain_scaling_study/ — mid-train (formerly Stage-1) human-ITW data-scaling study
+
+> Naming: the former "Stage-1 / pretrain" step is now called **mid-train**. Folder names, `stage1_*` metric names and the
+> config name `vtla_stage1_predictor_pretrain` are unchanged so existing paths keep working. The study has three parts:
+> mid-train (this folder), post-train and offline eval (`n0vtla_scaling_posttrain/`, below).
 
 N0-VTLA **Stage-1 predictor-grounding pretraining** (paper Sec 4.2) on human in-the-wild (ITW)
 tactile data, trained on nested fractions {20, 40, 60, 80, 100}% of the corpus, then scored on
@@ -83,5 +87,55 @@ CIs = episode bootstrap, in `summary.csv/json`):
 3. **Absolute transfer is weak** (top-1 0.03–0.4%, positive cosine ~0.15 vs ~0.32 in-domain human held-out).
 
 **Overall.** On human held-out data no metric shows a data-scaling benefit; on robot data Stage-1 itself matters a
-lot but 20→100% adds only a weak, unstable difference. These are proxies — downstream post-train from the merged
-checkpoints decides.
+lot but 20→100% adds only a weak, unstable difference. These are proxies; post-train and its offline evaluation follow
+below, and real-robot rollouts (hardware team) decide.
+
+---
+
+## n0vtla_scaling_posttrain/ — post-train of the mid-train checkpoints + offline eval
+
+### Post-train runs
+Each merged mid-train checkpoint (20/40/60/80%) was post-trained on two robot tasks, **smoke_test_v2** (cap-to-tray, 59
+train episodes, hand command is essentially two fixed poses: open / grasp) and **Task1** (tube-rack hole transfer, 55
+train episodes): 8 runs, global batch 64, 8xH200, 10,000 steps (config-default lr schedule, peak 2e-5, warmup 500,
+cosine decay over 20,000 steps, so the 10k checkpoint is at the same schedule state as the 10k checkpoint of the earlier
+20k-step baseline/ours runs), ~3 h each. Real-robot rollouts are evaluated by the hardware team.
+
+`<exp>/<step>/` with `<exp>` = `{sv2,task1}_posttrain_s1_{20,40,60,80}pct_10k` and steps 5000 / 9999 / 10000, each with
+`model.safetensors`, `metadata.pt`, `assets/` (no `optimizer.pt`; that stays on VISION).
+
+### Reference points (0% / 100%)
+- Task1: `n0vtla_wetlab_posttrain/post_train_task1_vision8gpu/{baseline,ours}/10000` (official base / Stage-1-human-14000 base, 20k-step runs, step 10000).
+- smoke_test_v2 100%: `n0vtla_wetlab_posttrain/human_data_post_train_v2/checkpoint_10000` (lab, 6 GPUs).
+- smoke_test_v2 0%: `n0vtla_wetlab_posttrain/checkpoint_20000` = official base post-trained on the OLDER smoke_test data
+  (asset `wetlab_v2_train`, own norm stats). **Not a like-for-like reference.**
+
+### offline_eval/ — one sub-directory per protocol (each: per-checkpoint `<task>_<pct>.json`, `summary.csv`, `logs/`)
+Only the final step-10000 checkpoint is evaluated; smoke_test_v2 checkpoints on `canonical_wetlab_smoketestv2_dev` (7
+episodes), Task1 checkpoints on `canonical_wetlab_task1_val` (13 episodes), each with its own training normalization.
+Cells: {0,20,40,60,80,100}% x {smoke_test_v2, Task1}.
+
+| Directory | What it looks at |
+|---|---|
+| `heldout_action_loss/` | The flow-matching action loss the policy is trained with (denoising-field MSE in normalized space), computed with no gradient on held-out episodes: offline imitation fit, not closed-loop success. Every 5th frame, mean of 4 noise/time draws per frame with row-seeded draws shared across checkpoints. `mean_action_loss_micro/macro` + `episode_se`; `by_group` splits it into xyz / rot6d / hand (6 Revo2 motor commands); `by_horizon` gives the loss per step of the 50-step chunk. |
+| `open_loop_action_error/` | Samples a 50-step chunk (10 denoising steps) per scored frame and compares it with the demonstration in physical units: xyz L2 error in mm, hand command MAE in raw counts (0-1000), rot6d MAE. Every 10th frame, 2 samples per frame. Baselines: predict zero motion (xyz/rot6d) and the training-set mean hand command. `metrics.<sample|mean|zero>_<xyz_mm|hand_mae|rot6d_mae>` with `mean`, `episode_se`, `by_horizon`. |
+
+### Results and interpretation
+Flow loss (total, mean ± episode SE): smoke_test_v2 20/40/60/80% = 0.0141 / 0.0137 / 0.0139 / 0.0138 (±0.0021); Task1
+0/20/40/60/80/100% = 0.0556 / 0.0548 / 0.0554 / 0.0557 / 0.0557 / 0.0556 (±0.0055-0.0060).
+Sampled xyz error (mm): smoke_test_v2 20/40/60/80% = 11.63 / 11.62 / 11.54 / 11.40 (±0.4; zero-motion baseline 36.25);
+Task1 0/20/40/60/80/100% = 15.76 / 15.28 / 14.99 / 15.18 / 15.05 / 15.39 (±1.6-1.9; zero-motion 21.22). Hand MAE is
+flat at 13.1-13.3 (smoke_test_v2) and 16.4-17.2 (Task1) counts vs 228 / 280 for the mean-command baseline.
+
+1. **No measurable effect of mid-train data quantity** (20-80%) on either offline metric: differences are within one
+   standard error; paired per-episode differences vs 20% are at most ~3% of the loss and not monotonic.
+2. **Not even mid-train vs none is distinguishable on Task1** (0% vs 100%: loss 0.0556 vs 0.0556, xyz 15.76 vs 15.39 mm),
+   although the same checkpoints differ hugely in tactile-latent retrieval (v3 above): post-training washes the
+   difference out offline.
+3. The policies are genuinely useful: sampled xyz error is ~30% (Task1) / ~68% (smoke_test_v2) below the no-motion baseline.
+4. smoke_test_v2 0% and 100% are not comparable in total loss / rot6d (loss 0.849 / 0.430 and rot6d open-loop error
+   0.335 vs 0.0005-0.0024 for 20-80%; the two rot6d errors are almost identical, which points to a rotation-representation
+   mismatch between those earlier checkpoints and the current pipeline - not verified). Their xyz / hand terms are fine
+   for the 100% (11.71 mm, 13.0 counts). The 0% (older data) fails on smoke_test_v2 (38.8 mm, worse than no motion).
+
+Limits: 7 / 13 held-out episodes, one seed per fraction, final checkpoint only, and offline fit is not closed-loop success.
