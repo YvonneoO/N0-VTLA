@@ -13,7 +13,7 @@
 # 8xH200, lr schedule left at the config default so the 10k checkpoint is comparable to the
 # 10k checkpoint of the 20k-step 100% run) -- only the pretrained checkpoint, dataset and
 # num-train-steps change.
-#   TASK  = task1 | sv2   (sv2 = smoke_test_v2, 59 train episodes)
+#   TASK  = task1 | sv2 | task2   (sv2 = smoke_test_v2, 59 train episodes; task2 = soft/hard sorting)
 #   LABEL = 20pct | 40pct | 60pct | 80pct
 #   sbatch --export=ALL,TASK=task1,LABEL=20pct deploy/vision/n0vtla_posttrain_scaling_siyuan.sbatch
 set -uo pipefail
@@ -32,6 +32,7 @@ DATA_ROOT=$YQQ/data/n0vtla
 case "$TASK" in
   task1) export VTLA_DATASET_PATH="$DATA_ROOT/canonical_wetlab_task1_train"; export VTLA_ASSET_ID=task1_tuberack_train ;;
   sv2)   export VTLA_DATASET_PATH="$DATA_ROOT/canonical_wetlab_smoketestv2_train"; export VTLA_ASSET_ID=wetlab_smoketestv2_train ;;
+  task2) export VTLA_DATASET_PATH="$DATA_ROOT/canonical_wetlab_task2_train"; export VTLA_ASSET_ID=task2_softhardsort_train ;;
   *) echo "unknown TASK=$TASK" >&2; exit 1 ;;
 esac
 # PRETRAINED overrides the merged Stage-1 ckpt (e.g. $DATA_ROOT/n0-vtla-base for the 0% cell, LABEL=base)
