@@ -26,7 +26,13 @@ cd $YQQ/N0-VTLA
 module load Miniforge3/25.3.0-3
 module load CUDA/12.8.0
 source $YQQ/env.sh
-source activate $YQQ/envs/n0vtla
+# `source activate ENVPATH` has been observed to not actually switch the interpreter on some
+# compute nodes (train.sh's `command -v python`/`command -v torchrun` then resolve to base
+# Miniforge's python, which lacks torch/transformers -- same failure mode documented in
+# n0vtla_task2_build_canonical.sbatch). Sidestep it: prepend the env's bin/ to PATH directly.
+export CONDA_PREFIX="$YQQ/envs/n0vtla"
+export CONDA_DEFAULT_ENV=n0vtla
+export PATH="$YQQ/envs/n0vtla/bin:$PATH"
 
 DATA_ROOT=$YQQ/data/n0vtla
 case "$TASK" in
@@ -43,7 +49,7 @@ export HF_HUB_OFFLINE=0
 export TRANSFORMERS_OFFLINE=0
 export HF_HOME="$YQQ/N0-VTLA/models/huggingface"
 
-python -c "
+$YQQ/envs/n0vtla/bin/python -c "
 from transformers import AutoConfig
 AutoConfig.from_pretrained('facebook/dinov2-base')
 print('DINOv2 config cached OK')
