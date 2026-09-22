@@ -5,7 +5,7 @@
 #SBATCH --gres=gpu:0
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
-#SBATCH --time=12:00:00
+#SBATCH --time=00:20:00
 #SBATCH --output=/scratch/project/prj-02-uq-llms-for-reasoning/yqq/upload_scaling_posttrain_%j.log
 #
 # Uploads the scaling-study post-train checkpoints (every saved step: 5000, 9999, 10000) to
