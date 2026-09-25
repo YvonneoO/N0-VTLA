@@ -52,6 +52,7 @@ cd /scratch/project/prj-02-uq-llms-for-reasoning/yqq/N0-VTLA_scaling_extract
   --normalization /scratch/project/prj-02-uq-llms-for-reasoning/yqq/data/normalization_pad30_per_task_scale.json \
   --base-checkpoint /scratch/project/prj-02-uq-llms-for-reasoning/yqq/data/n0vtla/n0-vtla-base \
   --output "${OUT_DIR}/${CHECKPOINT_LABEL}.json" \
+  ${EMB_DIR:+--save-embeddings "${EMB_DIR}/${CHECKPOINT_LABEL}.pt"} \
   --overwrite
 
 echo VISION_STAGE1_SCALING_EVAL_DONE

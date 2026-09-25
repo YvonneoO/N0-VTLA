@@ -60,13 +60,11 @@ def allowed_mask(ep: np.ndarray, fr: np.ndarray, h: int) -> np.ndarray:
     return a
 
 
-def retrieval(q: torch.Tensor, cand: torch.Tensor, ep: np.ndarray, fr: np.ndarray, h: int, fn: bool,
-              pool256: bool) -> dict[str, np.ndarray]:
-    """Per-query top-k indicators/expectations. q, cand: (N, D) L2-normalised; row i's positive is cand[i]."""
-    n = q.shape[0]
+def retrieval(q: torch.Tensor, cand: torch.Tensor, allow: np.ndarray, pool256: bool) -> dict[str, np.ndarray]:
+    """Per-query top-k indicators/expectations. q, cand: (N, D) L2-normalised; row i's positive is cand[i].
+    `allow[i, j]`: candidate j may act as a NEGATIVE for query i (diagonal must be False)."""
     sim = (q.float() @ cand.float().t()).numpy()
     pos = np.diag(sim).copy()
-    allow = allowed_mask(ep, fr, h) if fn else ~np.eye(n, dtype=bool)
     gt = ((sim > pos[:, None]) & allow).sum(1)           # allowed negatives that beat the positive
     m = allow.sum(1)                                     # allowed negatives
     out = {}
@@ -179,6 +177,10 @@ def main() -> None:
             dl2 = np.concatenate([d["d_l2"].numpy() for d in ds])
             subsets = {"all": np.ones(len(ep), bool), "top50": dl2 >= np.quantile(dl2, 0.5), "top25": dl2 >= np.quantile(dl2, 0.75)}
             R["retrieval"][g] = {}
+            masks = {}
+            for sub, m in subsets.items():
+                n_m = int(m.sum())
+                masks[sub] = {True: allowed_mask(ep[m], fr[m], H), False: ~np.eye(n_m, dtype=bool)}
             for k, label in enumerate(labels):
                 hz = torch.cat([d["hz"][k] for d in ds]).float()
                 hs = torch.cat([d["hzs"][k] for d in ds]).float()
@@ -190,7 +192,7 @@ def main() -> None:
                                                  ("p256_fn_top50", True, True, "top50"), ("p256_fn_top25", True, True, "top25")):
                         m = subsets[sub]
                         mt = torch.as_tensor(m)
-                        r = retrieval(q[mt], hs[mt], ep[m], fr[m], H, fn, p256)
+                        r = retrieval(q[mt], hs[mt], masks[sub][fn], p256)
                         cell = {}
                         for kk in KS:
                             mean, lo, hi = boot_ci(r[f"top{kk}"], ep[m], rng, args.bootstrap)
@@ -229,6 +231,7 @@ def main() -> None:
                                       "pos_rate_val": [float((stats_va[lbl_name] > np.quantile(stats_tr[lbl_name], q)).mean()) for q in args.quantiles],
                                       "auc": {}}
         lams = [1.0, 10.0, 100.0, 1000.0]
+        allow_va = allowed_mask(ep_va, fr_va, H)
         for k, label in enumerate(labels):
             for feat in ("z", "cur"):
                 key = "hz" if feat == "z" else "hcur"
@@ -238,7 +241,7 @@ def main() -> None:
                 w, mx, my, lam = ridge_fit(xtr_p, ftr_n, lams, ep_tr)
                 pred = torch.as_tensor((xva_p - mx) @ w + my)
                 pred = torch.nn.functional.normalize(pred, dim=-1)
-                r_fn = retrieval(pred, torch.as_tensor(fva_n), ep_va, fr_va, H, True, True)
+                r_fn = retrieval(pred, torch.as_tensor(fva_n), allow_va, True)
                 R["fixed_target"].setdefault(label, {})[feat] = {
                     "lambda": lam, **{f"p256_fn_top{kk}": {"mean": float(np.nanmean(r_fn[f"top{kk}"])), "chance": float(np.nanmean(r_fn[f"chance{kk}"]))} for kk in KS}}
                 # E: region grid

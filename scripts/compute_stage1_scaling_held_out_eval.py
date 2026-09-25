@@ -74,6 +74,8 @@ def main() -> None:
     parser.add_argument("--contact-quantile", type=float, default=0.9,
                          help="Cells of the pooled target field above this quantile count as 'contact' "
                               "for the contact-region recon baselines.")
+    parser.add_argument("--save-embeddings", type=Path, default=None,
+                        help="Also save the pool's normalised (z, z*) as fp16 so retrieval can be recomputed offline.")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--overwrite", action="store_true")
@@ -232,6 +234,26 @@ def main() -> None:
         "mean_pos_cos": float(diag.mean()),
         "mean_neg_cos": float((sim.sum() - diag.sum()) / (n_pool * n_pool - n_pool)),
     }
+    # Tie-fair variant. Many samples (no tactile change) share IDENTICAL target latents, and the `>` rank
+    # above ("optimistic ties") places the true partner FIRST among exact ties, inflating top-k. Here every
+    # similarity gets tiny independent jitter, so the partner is placed uniformly among its ties
+    # (averaged over several draws). Percentile rank counts ties as 0.5 (== per-query ROC-AUC).
+    gen = torch.Generator(device=sim.device).manual_seed(0)
+    n_draw = 3
+    fair = {f"{n}_{k}": [] for n in ("i2t", "t2i") for k in ("top1", "top5", "top10", "top100", "mrr")}
+    for _ in range(n_draw):
+        sj = sim + 1e-5 * torch.randn(sim.shape, generator=gen, device=sim.device)
+        dj = sj.diagonal()
+        for name, r in (("i2t", (sj > dj[:, None]).sum(1)), ("t2i", (sj.t() > dj[:, None]).sum(1))):
+            for k in (1, 5, 10, 100):
+                fair[f"{name}_top{k}"].append(float((r < k).float().mean()))
+            fair[f"{name}_mrr"].append(float((1.0 / (r.float() + 1)).mean()))
+        del sj
+    for k, v in fair.items():
+        retrieval[f"{k}_fair"] = float(np.mean(v))
+    retrieval["i2t_pct_rank"] = float((((sim < diag[:, None]).sum(1).float() + 0.5 * ((sim == diag[:, None]).sum(1).float() - 1))
+                                       / (n_pool - 1)).mean())
+    retrieval["n_unique_targets"] = int(torch.unique(hs.half(), dim=0).shape[0])
     for name, rank in (("i2t", rank_i2t), ("t2i", rank_t2i)):
         retrieval[f"{name}_top1"] = float((rank < 1).float().mean())
         retrieval[f"{name}_top5"] = float((rank < 5).float().mean())
@@ -240,6 +262,9 @@ def main() -> None:
         retrieval[f"{name}_mrr"] = float((1.0 / (rank.float() + 1)).mean())
         retrieval[f"{name}_median_rank"] = float(rank.float().median())
     del sim
+    if args.save_embeddings is not None:
+        args.save_embeddings.parent.mkdir(parents=True, exist_ok=True)
+        torch.save({"hz": hz.half().cpu(), "hzs": hs.half().cpu(), "label": args.checkpoint_label}, args.save_embeddings)
 
     # Recon vs trivial baselines: the model's L1 only means something next to what predicting
     # zeros / the pool-mean field would score on the same 8x8 target.
