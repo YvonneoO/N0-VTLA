@@ -19,6 +19,7 @@
 #
 # Required: EXP_NAME (e.g. stage1_online_20pct) and DATA_FRACTION (e.g. 0.2) via
 # --export=ALL,...
+#   BASELINE=1 (with DATA_FRACTION=0.0) scores n0-vtla-base itself instead of a mid-train delta.
 #   sbatch --export=ALL,EXP_NAME=stage1_online_20pct,DATA_FRACTION=0.2 \
 #       scripts/vision_stage1_scaling_held_out_eval_siyuan.sbatch
 set -euo pipefail
@@ -26,9 +27,15 @@ set -euo pipefail
 source /scratch/project/prj-02-uq-llms-for-reasoning/yqq/env.sh
 export PYTHONDONTWRITEBYTECODE=1
 
-: "${EXP_NAME:?EXP_NAME is required, e.g. stage1_online_20pct}"
 : "${DATA_FRACTION:?DATA_FRACTION is required, e.g. 0.2}"
-CHECKPOINT_LABEL="${CHECKPOINT_LABEL:-${EXP_NAME#stage1_online_}}"
+if [[ "${BASELINE:-0}" == "1" ]]; then
+  CHECKPOINT_LABEL="${CHECKPOINT_LABEL:-base}"
+  CKPT_ARGS=(--baseline)
+else
+  : "${EXP_NAME:?EXP_NAME is required, e.g. stage1_online_20pct}"
+  CHECKPOINT_LABEL="${CHECKPOINT_LABEL:-${EXP_NAME#stage1_online_}}"
+  CKPT_ARGS=(--checkpoint-dir "checkpoints/vtla_stage1_predictor_pretrain/${EXP_NAME}")
+fi
 # v2 reports (with pool retrieval + recon baselines) go to their own dir so the v1 JSONs stay intact.
 OUT_DIR="${OUT_DIR:-/scratch/project/prj-02-uq-llms-for-reasoning/yqq/data/stage1_scaling_held_out_v2}"
 
@@ -36,7 +43,7 @@ cd /scratch/project/prj-02-uq-llms-for-reasoning/yqq/N0-VTLA_scaling_extract
 
 /scratch/project/prj-02-uq-llms-for-reasoning/yqq/envs/n0vtla/bin/python \
   scripts/compute_stage1_scaling_held_out_eval.py \
-  --checkpoint-dir "checkpoints/vtla_stage1_predictor_pretrain/${EXP_NAME}" \
+  "${CKPT_ARGS[@]}" \
   --checkpoint-label "$CHECKPOINT_LABEL" \
   --data-fraction "$DATA_FRACTION" \
   --episode-list-json /scratch/project/prj-02-uq-llms-for-reasoning/yqq/data/itw_scaling_splits.json \

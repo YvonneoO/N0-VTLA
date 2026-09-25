@@ -46,9 +46,12 @@ from pathlib import Path
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--stage1-config", default="vtla_stage1_predictor_pretrain")
-    parser.add_argument("--checkpoint-dir", type=Path, required=True,
+    parser.add_argument("--checkpoint-dir", type=Path, default=None,
                          help="Exp-level checkpoint dir (e.g. .../stage1_online_20pct); "
-                              "the LATEST step subdir found there is loaded.")
+                              "the LATEST step subdir found there is loaded. Omit with --baseline.")
+    parser.add_argument("--baseline", action="store_true",
+                         help="Score n0-vtla-base itself (no mid-train delta loaded): the released checkpoint's "
+                              "own tactile encoder projection / predictor. Its recon head is untrained.")
     parser.add_argument("--checkpoint-label", required=True, help="e.g. '20pct' -- goes in the output JSON.")
     parser.add_argument("--data-fraction", type=float, required=True, help="e.g. 0.2 -- the x-axis value.")
     parser.add_argument("--episode-list-json", type=Path, required=True,
@@ -76,6 +79,8 @@ def main() -> None:
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
+    if args.baseline == (args.checkpoint_dir is not None):
+        raise ValueError("pass exactly one of --checkpoint-dir or --baseline")
     if args.output.exists() and not args.overwrite:
         raise FileExistsError(f"{args.output} already exists; pass --overwrite to replace it")
 
@@ -145,8 +150,12 @@ def main() -> None:
     # load_stage1_checkpoint unconditionally loads optimizer state onto whatever
     # optimizer it's handed -- never stepped here, just satisfies that signature.
     dummy_optim = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=1e-8)
-    loaded_step = load_stage1_checkpoint(model, dummy_optim, args.checkpoint_dir, device)
-    print(f"Loaded checkpoint step {loaded_step} from {args.checkpoint_dir}")
+    if args.baseline:
+        loaded_step = -1
+        print("BASELINE: n0-vtla-base only, no mid-train checkpoint loaded")
+    else:
+        loaded_step = load_stage1_checkpoint(model, dummy_optim, args.checkpoint_dir, device)
+        print(f"Loaded checkpoint step {loaded_step} from {args.checkpoint_dir}")
 
     model.eval()
     infos = []
