@@ -49,9 +49,8 @@ _CONSTANT_DIM_TOL = 1e-8
 # scripts/wetlab_smoke_adapter.py's LAYOUT) instead puts its one active arm in the RIGHT
 # slot, canonical_schema.ACTION_SLOTS["right_eef_xyz"/"right_eef_rot6d"] = indices
 # [10:13]/[13:19] -- "flexiv"'s mask silently no-ops on that data (it only ever touches
-# indices [0:10], which are the wetlab layout's always-zero left-arm padding). Confirmed
-# empirically 2026-09-17: task1_tuberack_train's action[10:13] stats came out identical to
-# state[10:13] (absolute-value stats, not delta) when computed with --robot flexiv.
+# indices [0:10], which are the wetlab layout's always-zero left-arm padding), so the
+# action stats come out as absolute values instead of deltas.
 #
 # A second, independent bug: even at the right indices, "flexiv"/"aloha" subtract
 # element-wise across the whole 9-dim eef block, including the 6 rot6d dims. rot6d is not
