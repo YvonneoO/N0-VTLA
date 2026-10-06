@@ -70,6 +70,11 @@ ROBOT_DELTA_MASKS = {
 # Sentinel delta_mask value routed to apply_delta_rotation_aware() instead of apply_delta().
 ROBOT_ROTATION_AWARE = "wetlab_right_arm_rotation_aware"
 ROBOT_DELTA_MASKS["wetlab_right_arm"] = ROBOT_ROTATION_AWARE
+# Dual-arm wetlab data (n0_dual_adapter.py layout): BOTH eef blocks, left [0:9] and right [10:19],
+# are active, so both get the rotation-aware delta. wetlab_right_arm would leave the left arm's
+# stats as absolute values while training sees it as a delta (ChunkDeltaToCurrentState).
+ROBOT_ROTATION_AWARE_DUAL = "wetlab_dual_arm_rotation_aware"
+ROBOT_DELTA_MASKS["wetlab_dual_arm"] = ROBOT_ROTATION_AWARE_DUAL
 
 
 class RunningStats:
@@ -199,7 +204,8 @@ def apply_delta(actions: np.ndarray, state: np.ndarray, delta_mask: list[bool]) 
     return actions
 
 
-def apply_delta_rotation_aware(actions: np.ndarray, state: np.ndarray) -> np.ndarray:
+def apply_delta_rotation_aware(actions: np.ndarray, state: np.ndarray,
+                               arms: tuple[str, ...] = ("right",)) -> np.ndarray:
     """Delta relative to the current state for the wetlab canonical layout's RIGHT eef
     block only (the one arm wetlab_smoke_adapter.py ever writes). xyz: element-wise
     subtraction (a valid delta). rot6d: world-frame relative rotation via
@@ -215,13 +221,14 @@ def apply_delta_rotation_aware(actions: np.ndarray, state: np.ndarray) -> np.nda
     absolute / already zero either way).
     """
     actions = actions.copy()
-    xyz_lo, xyz_hi = _canonical_schema.ACTION_SLOTS["right_eef_xyz"]
-    rot_lo, rot_hi = _canonical_schema.ACTION_SLOTS["right_eef_rot6d"]
+    for arm in arms:
+        xyz_lo, xyz_hi = _canonical_schema.ACTION_SLOTS[f"{arm}_eef_xyz"]
+        rot_lo, rot_hi = _canonical_schema.ACTION_SLOTS[f"{arm}_eef_rot6d"]
 
-    actions[..., xyz_lo:xyz_hi] -= state[:, None, xyz_lo:xyz_hi]
+        actions[..., xyz_lo:xyz_hi] -= state[:, None, xyz_lo:xyz_hi]
 
-    ref = np.broadcast_to(state[:, None, rot_lo:rot_hi], actions[..., rot_lo:rot_hi].shape)
-    actions[..., rot_lo:rot_hi] = rot6d_delta_world(ref, actions[..., rot_lo:rot_hi])
+        ref = np.broadcast_to(state[:, None, rot_lo:rot_hi], actions[..., rot_lo:rot_hi].shape)
+        actions[..., rot_lo:rot_hi] = rot6d_delta_world(ref, actions[..., rot_lo:rot_hi])
     return actions
 
 
@@ -275,6 +282,8 @@ def compute(specs: list[dict], max_frames: int | None, train_only: bool = False)
             actions = action_horizon_sequence(action)
             if spec["delta_mask"] == ROBOT_ROTATION_AWARE:
                 actions = apply_delta_rotation_aware(actions, state)
+            elif spec["delta_mask"] == ROBOT_ROTATION_AWARE_DUAL:
+                actions = apply_delta_rotation_aware(actions, state, arms=("left", "right"))
             else:
                 actions = apply_delta(actions, state, spec["delta_mask"])
             state_stats.update(state)
