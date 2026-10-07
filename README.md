@@ -42,6 +42,7 @@ does not ship the large-scale pretraining pipeline.
 - Post-train the pretrained checkpoint on your own visuo-tactile demonstrations with `train.sh`. See [POST_TRAINING.md](docs/POST_TRAINING.md).
 - Convert your episodes to the canonical 32-dim layout and compute normalization statistics (`scripts/convert_canonical_data.py`, `scripts/compute_canonical_norm.py`).
 - Serve a policy over websocket for a real robot, or over ZMQ for the simulator (`scripts/serve_policy.py`, `scripts/serve_zmq.py`). See [DEPLOY.md](docs/DEPLOY.md).
+  - Real-robot interface contracts: single-arm [REAL_ROBOT_INFERENCE.md](docs/REAL_ROBOT_INFERENCE.md); dual-arm Task 4 (tube pour, xArm6 + Revo2 x2) [REAL_ROBOT_INFERENCE_DUAL.md](docs/REAL_ROBOT_INFERENCE_DUAL.md). Both use the same `serve_policy.py` and `vtla_tactile_posttrain` config; the dual-arm one adds the left wrist camera, a second tactile view and the left arm/hand slots.
 - Check that the tactile pathway is doing something, and that the model stays byte-equivalent to the base policy with tactile off (`scripts/probe_z_tactile_dependence.py`, `scripts/gate_c_check.py`).
 
 ## Model summary

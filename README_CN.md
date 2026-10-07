@@ -37,6 +37,7 @@ $\mathcal{N}_0$-VTLA 是一个视觉-触觉-语言-动作策略，为预训练�
 - 在你自己的视触觉演示数据上后训练预训练 checkpoint（`train.sh`）。详见 [POST_TRAINING.md](docs/POST_TRAINING.md)。
 - 把 episode 转换成 canonical 32 维表示并计算归一化统计（`scripts/convert_canonical_data.py`、`scripts/compute_canonical_norm.py`）。
 - 通过 websocket 为真机部署策略，或通过 ZMQ 为仿真部署（`scripts/serve_policy.py`、`scripts/serve_zmq.py`）。详见 [DEPLOY.md](docs/DEPLOY.md)。
+  - 真机接口约定：单臂见 [REAL_ROBOT_INFERENCE.md](docs/REAL_ROBOT_INFERENCE.md)；双臂 Task 4（倒水，xArm6 加两只 Revo2）见 [REAL_ROBOT_INFERENCE_DUAL.md](docs/REAL_ROBOT_INFERENCE_DUAL.md)。两者用同一个 `serve_policy.py` 和 `vtla_tactile_posttrain` 配置；双臂版多了左腕相机、第二路触觉以及左臂和左手的槽位。
 - 检查触觉通路是否真的在起作用，以及关闭触觉时模型是否与基础策略字节等价（`scripts/probe_z_tactile_dependence.py`、`scripts/gate_c_check.py`）。
 
 ## 模型概要
