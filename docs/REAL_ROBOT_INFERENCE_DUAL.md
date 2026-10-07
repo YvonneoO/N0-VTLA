@@ -78,7 +78,9 @@ Encoding is the single-arm one (`itw_pressure.normalize_pressure` -> `pressure_r
 - Use **`wetlab_tactile_norm_task4_dual.json`** (30 slots: 0-14 = robot LEFT hand, 15-29 = robot RIGHT
   hand), not the single-arm norm file and not the human-corpus stats. It was fitted on the Task 4
   train episodes, one hand at a time, because the right-hand glove responds much more weakly (grip
-  step about 0.1-2.2 against 0.4-9.4 on the left). The file must travel with the checkpoint.
+  step about 0.1-2.2 against 0.4-9.4 on the left). It is in this repo at
+  `scripts/wetlab_tactile_norm_task4_dual.json` (also next to the checkpoints on Hugging Face,
+  `n0vtla_wetlab_posttrain/post_train_task4_dual_vision8gpu/`); fitted on all 50 train episodes, no dead glove.
 - The released raw files are **crossed**: the glove on the robot right hand is in `left_hand_data.npz`,
   the glove on the robot left hand in `right_hand_data.npz`. The model-side mapping is anatomical:
   robot right hand -> `right_wrist_right_tactile` with `hand="right"`, robot left hand ->
