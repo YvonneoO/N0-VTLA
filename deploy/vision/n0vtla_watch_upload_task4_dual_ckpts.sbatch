@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=2
 #SBATCH --gres=gpu:0
 #SBATCH --mem=16G
-#SBATCH --time=06:00:00
+#SBATCH --time=01:00:00
 #SBATCH --output=/scratch/project/prj-02-uq-llms-for-reasoning/yqq/logs/n0vtla_upload_t4_dual_%j.log
 #
 # Uploads every saved checkpoint step dir (model.safetensors + optimizer.pt + metadata.pt + assets/
