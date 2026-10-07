@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=n0vtla_upload_t4_dual
+#SBATCH --job-name=n0vtla_up_t4
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=2
@@ -8,15 +8,17 @@
 #SBATCH --time=06:00:00
 #SBATCH --output=/scratch/project/prj-02-uq-llms-for-reasoning/yqq/logs/n0vtla_upload_t4_dual_%j.log
 #
-# Watcher: submit with --dependency=afterany:<ours job>:<baseline job>; uploads every saved checkpoint
-# step dir (model.safetensors + optimizer.pt + metadata.pt + assets/ with the state/action norm stats)
-# of both Task4 dual-arm post-train runs, plus the per-hand tactile normalization the client needs,
-# to qqyang/zihiao_real_test (dataset; pre-existing repo, never --repo-type model), following the
+# Uploads every saved checkpoint step dir (model.safetensors + optimizer.pt + metadata.pt + assets/
+# with the state/action norm stats) of ONE Task4 dual-arm post-train run (VARIANT=ours|baseline), plus
+# the per-hand tactile normalization the client needs, to qqyang/zihiao_real_test (dataset; pre-existing repo, never --repo-type model), following the
 # Task1 layout:  n0vtla_wetlab_posttrain/post_train_task4_dual_vision8gpu/{ours,baseline}/<step>/
-# afterany (not afterok) so a run that stopped early still gets what it saved uploaded; the log says
-# which steps exist. Nothing is deleted here. Re-running just re-uploads the same paths.
-#   sbatch --dependency=afterany:687128:687129 deploy/vision/n0vtla_watch_upload_task4_dual_ckpts.sbatch
+# Each variant is its own job so a finished run does not wait for the other. For a run still training,
+# submit with --dependency=afterany:<its job> (afterany so an early stop still uploads what it saved).
+# Nothing is deleted here. Re-running just re-uploads the same paths.
+#   sbatch --export=ALL,VARIANT=ours deploy/vision/n0vtla_watch_upload_task4_dual_ckpts.sbatch
+#   sbatch --dependency=afterany:<job> --export=ALL,VARIANT=baseline deploy/vision/n0vtla_watch_upload_task4_dual_ckpts.sbatch
 set -euo pipefail
+: "${VARIANT:?VARIANT must be ours or baseline}"
 
 YQQ=/scratch/project/prj-02-uq-llms-for-reasoning/yqq
 source $YQQ/env.sh
@@ -45,8 +47,7 @@ upload_all() {
     fi
   done
 }
-upload_all checkpoints/vtla_tactile_posttrain/task4_dual_posttrain_ours_vision8gpu ours
-upload_all checkpoints/vtla_tactile_posttrain/task4_dual_posttrain_baseline_vision8gpu baseline
+upload_all checkpoints/vtla_tactile_posttrain/task4_dual_posttrain_${VARIANT}_vision8gpu $VARIANT
 
 echo "https://huggingface.co/datasets/$REPO/tree/main/$ROOT"
-echo T4_UPLOAD_COMPLETE
+echo T4_UPLOAD_COMPLETE_$VARIANT
