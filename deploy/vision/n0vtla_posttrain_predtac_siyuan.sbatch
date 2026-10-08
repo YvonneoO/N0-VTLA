@@ -38,7 +38,7 @@ esac
 [ -d "$VTLA_DATASET_PATH" ] || { echo "dataset $VTLA_DATASET_PATH missing"; exit 2; }
 export VTLA_PRETRAINED_CHECKPOINT="${PRETRAINED:-$DATA_ROOT/n0-vtla-base_plus_stage1_human_14000}"
 export EXP_NAME="${EXP_NAME_OVERRIDE:-${TASK}_posttrain_ours_${SUFFIX}_vision8gpu}"
-export NPROC_PER_NODE=8
+export NPROC_PER_NODE=${GPUS:-8}
 export HF_HUB_OFFLINE=0
 export TRANSFORMERS_OFFLINE=0
 export HF_HOME="$YQQ/N0-VTLA/models/huggingface"
