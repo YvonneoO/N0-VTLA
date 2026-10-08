@@ -14,7 +14,7 @@
 # episodes with three tactile inputs:
 #   real  = canonical_wetlab_task1_val / canonical_wetlab_smoketestv2_dev   (glove)
 #   pred  = canonical_wetlab_<task>_predtacq_val                            (predicted: threshold + per-task decoder + quantile map)
-#   zero  = canonical_wetlab_<task>_zerotac_val                             (all-zero tactile = idle glove)
+#   zero  = canonical_wetlab_<task>_zerotac0_val                             (all-zero tactile = idle glove)
 # Expected if predicted tactile is informative: loss(real) < loss(pred) < loss(zero).
 #   sbatch --job-name=task1 --export=ALL,TASK=task1 deploy/vision/n0vtla_predtac_offline_check_siyuan.sbatch      (TASK task1 | sv2)
 set -uo pipefail
@@ -39,9 +39,9 @@ OUT_DIR="${OUT_DIR:-$YQQ/data/predtac_offline_check}"
 mkdir -p "$OUT_DIR"
 case "$TASK" in
   task1) CKPT="$REF/task1_10k/n0vtla_wetlab_posttrain/post_train_task1_vision8gpu/ours/10000"; ASSET=task1_tuberack_train
-         REAL=$DATA/canonical_wetlab_task1_val; PRED=$DATA/canonical_wetlab_task1_predtacq_val; ZERO=$DATA/canonical_wetlab_task1_zerotac_val;;
+         REAL=$DATA/canonical_wetlab_task1_val; PRED=$DATA/canonical_wetlab_task1_predtacq_val; ZERO=$DATA/canonical_wetlab_task1_zerotac0_val;;
   sv2)   CKPT="$REF/sv2_100pct/n0vtla_wetlab_posttrain/human_data_post_train_v2/checkpoint_10000"; ASSET=wetlab_smoketestv2_train
-         REAL=$DATA/canonical_wetlab_smoketestv2_dev; PRED=$DATA/canonical_wetlab_smoketestv2_predtacq_val; ZERO=$DATA/canonical_wetlab_smoketestv2_zerotac_val;;
+         REAL=$DATA/canonical_wetlab_smoketestv2_dev; PRED=$DATA/canonical_wetlab_smoketestv2_predtacq_val; ZERO=$DATA/canonical_wetlab_smoketestv2_zerotac0_val;;
   *) echo "unknown TASK $TASK"; exit 2;;
 esac
 [ -f "$CKPT/model.safetensors" ] || { echo "FATAL: checkpoint missing $CKPT"; exit 2; }

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 import h5py
@@ -128,7 +129,7 @@ def resolve_episode_window(source, *, task_name="cap_to_tray", require_success_l
     tactile_source = source / "left_hand_data.npz"
     with h5py.File(source / "episode_30hz.h5", "r") as f, np.load(tactile_source, allow_pickle=False) as z:
         pad_std = max(float(np.std(np.asarray(z[f"tactile_{pad}"], np.float64))) for pad in PAD_IDS)
-        if pad_std < 1e-4:
+        if pad_std < 1e-4 and os.environ.get("WETLAB_ALLOW_ZERO_TACTILE") != "1":   # =1: deliberate all-zero tactile (no-tactile ablation datasets)
             raise ValueError(
                 f"{tactile_source.name} looks dead (max per-pad std {pad_std:.2e}); "
                 "the live/dead file assignment may have changed upstream -- verify "
