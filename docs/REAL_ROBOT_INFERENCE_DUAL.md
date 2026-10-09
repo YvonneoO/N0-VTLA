@@ -62,6 +62,18 @@ python scripts/serve_policy.py --policy.config=vtla_tactile_posttrain \
 `--low-cpu-mem-usage` avoids a ~17 GB host-RAM spike while loading. Do not set `VTLA_ASSET_ID`; the server
 finds the checkpoint's single asset directory itself.
 
+Two optional flags for diagnosing rollout variance (default off; PyTorch models):
+
+| flag | effect |
+|---|---|
+| `--seed N` | seeds torch/numpy/CUDA once at startup: the same sequence of requests gives the same chunks across server restarts; two calls with the same observation still draw different noise |
+| `--noise-scale S` | multiplies the Gaussian noise the 50-step chunk is denoised from; `S < 1` narrows the spread between samples, `S = 0` makes the reply a deterministic function of the observation (it can blur between modes, so it is not necessarily better) |
+
+Checked on the ours checkpoint (step 20000) with the example client: with `--noise-scale 0` two replays against the same
+server returned identical chunks; two independently started servers with `--seed 0` returned identical results for the same
+requests. That only shows the flags work, not that they change task success; compare success counts with and without them
+on enough trials (10 trials give a 95% interval of roughly 6%–51% for 2 successes).
+
 ## 4. Client
 
 Use `n0vtla_client.websocket_client_policy.WebsocketClientPolicy`. **`scripts/dual_arm_client_example.py` is the
