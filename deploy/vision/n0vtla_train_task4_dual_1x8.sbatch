@@ -14,6 +14,9 @@
 #   VARIANT=ours      -> n0-vtla-base_plus_stage1_human_14000 (full human-data mid-train merged into base)
 #   VARIANT=baseline  -> n0-vtla-base (no mid-train)
 #   sbatch --export=ALL,VARIANT=ours deploy/vision/n0vtla_train_task4_dual_1x8.sbatch
+# Optional DATA_NAME / ASSET_ID / EXP_TAG select another build (default: the per-run-segment build). The
+# one-episode-per-trajectory build (n0vtla_task4_build_canonical.sbatch WHOLE=1):
+#   sbatch --export=ALL,VARIANT=ours,DATA_NAME=canonical_wetlab_task4_dual_traj_train,ASSET_ID=task4_dual_pour_traj_train,EXP_TAG=traj_ <this file>
 set -uo pipefail
 : "${VARIANT:?VARIANT must be ours or baseline}"
 
@@ -31,9 +34,9 @@ case "$VARIANT" in
   baseline) export VTLA_PRETRAINED_CHECKPOINT="$DATA_ROOT/n0-vtla-base" ;;
   *) echo "unknown VARIANT=$VARIANT" >&2; exit 1 ;;
 esac
-export VTLA_DATASET_PATH="$DATA_ROOT/canonical_wetlab_task4_dual_train"
-export VTLA_ASSET_ID=task4_dual_pour_train
-export EXP_NAME="task4_dual_posttrain_${VARIANT}_vision8gpu"
+export VTLA_DATASET_PATH="$DATA_ROOT/${DATA_NAME:-canonical_wetlab_task4_dual_train}"
+export VTLA_ASSET_ID="${ASSET_ID:-task4_dual_pour_train}"
+export EXP_NAME="task4_dual_posttrain_${VARIANT}_${EXP_TAG:-}vision8gpu"
 export NPROC_PER_NODE=8
 export HF_HUB_OFFLINE=0
 export TRANSFORMERS_OFFLINE=0
