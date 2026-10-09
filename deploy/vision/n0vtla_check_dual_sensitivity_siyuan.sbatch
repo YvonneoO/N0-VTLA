@@ -5,7 +5,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=64G
-#SBATCH --time=01:00:00
+#SBATCH --time=00:20:00
 #SBATCH --output=/scratch/project/prj-02-uq-llms-for-reasoning/yqq/logs/t4_sens_%j.log
 # Sampling-spread + input-sensitivity probe of a Task4 checkpoint (scripts/check_dual_policy_sensitivity.py).
 # Required: CKPT. Optional: LABEL, NUM_FRAMES(=48), K(=12).
