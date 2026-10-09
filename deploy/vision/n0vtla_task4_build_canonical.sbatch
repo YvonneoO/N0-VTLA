@@ -21,7 +21,7 @@ YQQ=/scratch/project/prj-02-uq-llms-for-reasoning/yqq
 source $YQQ/env.sh
 PY=$YQQ/envs/n0vtla/bin/python
 export PATH="$YQQ/envs/n0vtla/bin:$PATH"
-export PYTHONDONTWRITEBYTECODE=1
+export PYTHONDONTWRITEBYTECODE=1 JAX_PLATFORMS=cpu
 cd $YQQ/N0-VTLA
 export PYTHONPATH=$PWD:$PWD/scripts
 
@@ -29,8 +29,14 @@ DATA_ROOT=$YQQ/data/n0vtla
 RAW_DIR=$DATA_ROOT/wetlab_raw/task4_dual_arm_tube_pour_20261005
 SPLIT=$RAW_DIR/training_split.json
 NORM_PATH=$DATA_ROOT/wetlab_tactile_norm_task4_dual.json
-OUT=$DATA_ROOT/canonical_wetlab_task4_dual_train
-ASSET_ID=task4_dual_pour_train
+# WHOLE=1: one episode per trajectory (every gap between the first and last legal row filled with hold
+# semantics, scripts/dual_gap_bridge.py) instead of one episode per contiguous legal run.
+#   sbatch --export=ALL,WHOLE=1,OUT_NAME=canonical_wetlab_task4_dual_traj_train,ASSET_ID=task4_dual_pour_traj_train <this file>
+WHOLE="${WHOLE:-0}"
+OUT=$DATA_ROOT/${OUT_NAME:-canonical_wetlab_task4_dual_train}
+ASSET_ID="${ASSET_ID:-task4_dual_pour_train}"
+BUILD_FLAGS=""
+[[ "$WHOLE" == "1" ]] && BUILD_FLAGS="--whole-trajectory"
 SCRATCH=$DATA_ROOT/_scratch_task4
 mkdir -p $SCRATCH
 
@@ -38,7 +44,7 @@ echo "=== [1/4] tactile normalization ==="
 [[ -f $NORM_PATH ]] && echo "exists, skipping" || $PY scripts/fit_wetlab_dual_tactile_norm.py $RAW_DIR $SPLIT $NORM_PATH
 
 echo "=== [2/4] canonical dataset ==="
-$PY scripts/build_wetlab_dual_canonical_dataset.py $RAW_DIR $SPLIT $NORM_PATH $OUT --workers 16 --scratch-dir $SCRATCH
+$PY scripts/build_wetlab_dual_canonical_dataset.py $RAW_DIR $SPLIT $NORM_PATH $OUT --workers 16 --scratch-dir $SCRATCH $BUILD_FLAGS
 
 echo "=== [3/4] state/action norm stats ==="
 $PY scripts/compute_canonical_norm.py --repo-id $OUT --robot wetlab_dual_arm \

@@ -34,13 +34,17 @@ from itw_tactile_smoke_adapter import _info_json, _write_jsonl
 
 
 def _convert_one(uuid: str, source: Path, scratch: Path, norm_path: Path,
-                 bridge_gap_rows: int = 0) -> tuple[str, str | None, dict | None]:
+                 bridge_gap_rows: int = 0, whole_trajectory: bool = False) -> tuple[str, str | None, dict | None]:
     try:
         w = nd.resolve_dual_window(source)
         runs_before = len(w["runs"])
-        w["valid"], bridged = gb.bridge_short_gaps(w, bridge_gap_rows)
-        if bridge_gap_rows > 0:
+        if whole_trajectory:
+            w["valid"], bridged, _nonfinite = gb.fill_interior_gaps(w)
             w["runs"] = nd.contiguous_runs(w["valid"])
+        else:
+            w["valid"], bridged = gb.bridge_short_gaps(w, bridge_gap_rows)
+            if bridge_gap_rows > 0:
+                w["runs"] = nd.contiguous_runs(w["valid"])
         if not w["runs"]:
             return uuid, "no legal 50-row dual-arm window", None
         norm = load_normalization(norm_path)
@@ -48,7 +52,7 @@ def _convert_one(uuid: str, source: Path, scratch: Path, norm_path: Path,
         nd.write_meta(scratch, episodes, stats, frames, nbytes, "xarm6_revo2_dual")
         legal = w["valid"]
         audit = dict(
-            uuid=uuid, rows=int(len(w["t"])), bridge_gap_rows=bridge_gap_rows, bridged_rows=int(bridged),
+            uuid=uuid, rows=int(len(w["t"])), bridge_gap_rows=bridge_gap_rows, whole_trajectory=whole_trajectory, bridged_rows=int(bridged),
             n_runs_without_bridging=runs_before, legal_rows=int(legal.sum()), n_runs=len(w["runs"]),
             run_lengths=[int(len(g)) for g in w["runs"]], frames_written=int(frames),
             rows_both_engaged=int((legal & w["engaged"]["right"] & w["engaged"]["left"]).sum()),
@@ -115,6 +119,9 @@ def main() -> None:
     ap.add_argument("--bridge-gap-rows", type=int, default=0,
                     help="Fill illegal gaps of at most this many rows between legal rows when an arm is engaged "
                          "(see dual_gap_bridge.py). 0 = off (the original behaviour).")
+    ap.add_argument("--whole-trajectory", action="store_true",
+                    help="One episode per trajectory: fill every illegal row between the first and last legal row "
+                         "(hold semantics, see dual_gap_bridge.fill_interior_gaps). Overrides --bridge-gap-rows.")
     ap.add_argument("--limit", type=int, default=0, help="Convert only the first N train uuids (smoke).")
     args = ap.parse_args()
     if args.output.exists():
@@ -136,10 +143,10 @@ def main() -> None:
 
     if args.workers <= 1:
         for u in uuids:
-            report(*_convert_one(u, args.raw_dir / u, jobs[u], args.norm_path, args.bridge_gap_rows))
+            report(*_convert_one(u, args.raw_dir / u, jobs[u], args.norm_path, args.bridge_gap_rows, args.whole_trajectory))
     else:
         with ProcessPoolExecutor(max_workers=args.workers) as pool:
-            futs = [pool.submit(_convert_one, u, args.raw_dir / u, jobs[u], args.norm_path, args.bridge_gap_rows) for u in uuids]
+            futs = [pool.submit(_convert_one, u, args.raw_dir / u, jobs[u], args.norm_path, args.bridge_gap_rows, args.whole_trajectory) for u in uuids]
             for f in as_completed(futs):
                 report(*f.result())
 
