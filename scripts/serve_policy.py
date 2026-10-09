@@ -46,6 +46,16 @@ class Args:
     # the JAX loading path.
     low_cpu_mem_usage: bool = False
 
+    # Seed torch/numpy/CUDA once at startup, so the sequence of sampled actions is reproducible for a given
+    # sequence of requests (each call still draws fresh noise; two calls with the same observation differ).
+    # None (default) = unseeded, the previous behaviour.
+    seed: int | None = None
+    # Multiplier on the Gaussian noise the action chunk is denoised from (PyTorch models only). 1.0 (default) =
+    # unchanged. Smaller values shrink the spread between samples; 0 starts from zeros and makes the reply a
+    # deterministic function of the observation, but not necessarily a better one: it can bias the chunk toward a
+    # blurred average of the modes. For diagnosing whether sampling noise drives rollout variance.
+    noise_scale: float = 1.0
+
 
 def create_policy(args: Args) -> _policy.Policy:
     """Create a policy from the given arguments."""
@@ -83,12 +93,34 @@ def create_policy(args: Args) -> _policy.Policy:
             )
             norm_stats = _checkpoints.load_norm_stats(assets_root, candidates[0])
 
-    return _policy_config.create_trained_policy(
+    policy = _policy_config.create_trained_policy(
         train_config, args.policy.dir, default_prompt=args.default_prompt, norm_stats=norm_stats
     )
+    if args.noise_scale != 1.0:
+        if args.noise_scale < 0:
+            raise ValueError("--noise-scale must be >= 0")
+        model = policy._model  # noqa: SLF001
+        if not hasattr(model, "sample_noise"):
+            raise ValueError("--noise-scale is only supported for PyTorch models")
+        original = model.sample_noise
+        model.sample_noise = lambda shape, device: args.noise_scale * original(shape, device)
+        logging.info("Action noise scaled by %s", args.noise_scale)
+    return policy
 
 
 def main(args: Args) -> None:
+    if args.seed is not None:
+        import random
+
+        import numpy as np
+        import torch
+
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(args.seed)
+        logging.info("Seeded torch/numpy/CUDA with %d", args.seed)
     policy = create_policy(args)
     policy_metadata = policy.metadata
 

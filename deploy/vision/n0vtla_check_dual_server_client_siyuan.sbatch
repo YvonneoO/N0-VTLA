@@ -11,7 +11,8 @@
 # Integration test of the real serving path for a Task4 dual-arm checkpoint: starts scripts/serve_policy.py
 # (websocket server, exactly the documented command, NO VTLA_ASSET_ID set so the checkpoint-asset fallback is
 # exercised) and replays one released training package through scripts/dual_arm_client_example.py.
-# Required: CKPT. Optional: UUID (default: first episode dir), QUERIES(=6).
+# Required: CKPT. Optional: UUID (default: first episode dir), QUERIES(=6), SERVER_ARGS (extra serve_policy.py flags,
+# e.g. "--seed 0 --noise-scale 0"; the client then runs twice and the two outputs are compared).
 #   sbatch --export=ALL,CKPT=<ckpt dir> deploy/vision/n0vtla_check_dual_server_client_siyuan.sbatch
 set -uo pipefail
 : "${CKPT:?CKPT is required}"
@@ -26,7 +27,7 @@ RAW=$YQQ/data/n0vtla/wetlab_raw/task4_dual_arm_tube_pour_20261005
 UUID="${UUID:-$(ls $RAW | grep -E '^[0-9a-f-]{36}$' | head -1)}"
 PORT=8765
 
-$PY scripts/serve_policy.py --policy.config=vtla_tactile_posttrain --policy.dir="$CKPT" --low-cpu-mem-usage --port $PORT > $YQQ/logs/t4_srvcli_server_$SLURM_JOB_ID.log 2>&1 &
+$PY scripts/serve_policy.py --policy.config=vtla_tactile_posttrain --policy.dir="$CKPT" --low-cpu-mem-usage --port $PORT ${SERVER_ARGS:-} > $YQQ/logs/t4_srvcli_server_$SLURM_JOB_ID.log 2>&1 &
 SERVER=$!
 for i in $(seq 1 90); do
   $PY -c "import socket,sys; s=socket.socket(); s.settimeout(1); sys.exit(0 if s.connect_ex(('127.0.0.1',$PORT))==0 else 1)" && break
@@ -34,9 +35,18 @@ for i in $(seq 1 90); do
   sleep 5
 done
 echo "server up after ~$((i*5))s; package $UUID"
-$PY scripts/dual_arm_client_example.py --package $RAW/$UUID --norm scripts/wetlab_tactile_norm_task4_dual.json \
-  --port $PORT --queries "${QUERIES:-6}"
-STATUS=$?
+CLIENT="$PY scripts/dual_arm_client_example.py --package $RAW/$UUID --norm scripts/wetlab_tactile_norm_task4_dual.json --port $PORT --queries ${QUERIES:-6}"
+$CLIENT | tee $YQQ/logs/t4_srvcli_run1_$SLURM_JOB_ID.txt
+STATUS=${PIPESTATUS[0]}
+if [ -n "${SERVER_ARGS:-}" ]; then
+  $CLIENT > $YQQ/logs/t4_srvcli_run2_$SLURM_JOB_ID.txt
+  strip() { sed -E 's/ infer [0-9]+ ms//' "$1"; }
+  if diff <(strip $YQQ/logs/t4_srvcli_run1_$SLURM_JOB_ID.txt) <(strip $YQQ/logs/t4_srvcli_run2_$SLURM_JOB_ID.txt) > /dev/null; then
+    echo "REPEAT_IDENTICAL: two client runs against the same server returned identical chunks"
+  else
+    echo "REPEAT_DIFFERENT: two client runs returned different chunks"
+  fi
+fi
 kill $SERVER 2>/dev/null
 grep -aE "asset|norm|fall" $YQQ/logs/t4_srvcli_server_$SLURM_JOB_ID.log | cut -c1-200 | tail -5
 [ $STATUS -eq 0 ] && echo T4_SRVCLI_PASSED || echo "T4_SRVCLI_FAILED ($STATUS)"
