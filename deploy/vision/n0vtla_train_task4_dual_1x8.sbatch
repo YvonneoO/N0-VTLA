@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:8
 #SBATCH --mem=200G
-#SBATCH --time=16:00:00
+#SBATCH --time=08:00:00
 #SBATCH --output=/scratch/project/prj-02-uq-llms-for-reasoning/yqq/logs/n0vtla_t4_dual_%j.log
 #
 # Post-train the dual-arm Task4 (50 min-pour episodes, canonical 32-dim bimanual layout) on 1 node x 8 H200.
