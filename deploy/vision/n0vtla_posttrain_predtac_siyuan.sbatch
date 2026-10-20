@@ -57,7 +57,10 @@ echo "=== $EXP_NAME: ckpt=$VTLA_PRETRAINED_CHECKPOINT data=$VTLA_DATASET_PATH as
 RFLAG=""
 CKD="$YQQ/N0-VTLA/checkpoints/vtla_tactile_posttrain/$EXP_NAME"
 if [ "${RESUME:-}" = "auto" ]; then
-  if ls -d "$CKD"/[0-9]* >/dev/null 2>&1; then echo "RESUME=auto: checkpoint found in $CKD -> --resume"; RFLAG="--resume"
+  if ls -d "$CKD"/[0-9]* >/dev/null 2>&1; then
+    LATEST=$(ls -d "$CKD"/[0-9]* | xargs -n1 basename | sort -n | tail -1)
+    if [ "$LATEST" -ge "${STEPS:-20000}" ]; then echo "RESUME=auto: latest step $LATEST >= STEPS ${STEPS:-20000}, training already complete -> nothing to do"; echo "=== TRAINING SCRIPT EXITED ($EXP_NAME) rc=0 (already complete) ==="; exit 0; fi
+    echo "RESUME=auto: checkpoint found in $CKD (latest step $LATEST) -> --resume"; RFLAG="--resume"
   else echo "RESUME=auto: no checkpoint in $CKD -> fresh start from step 0"; [ -d "$CKD" ] && RFLAG="--overwrite"; fi
 elif [ -n "${RESUME:-}" ]; then RFLAG="--resume"; fi
 bash train.sh --batch-size=64 --num-train-steps=${STEPS:-20000} --save-interval=${SAVE:-5000} $RFLAG
