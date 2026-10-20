@@ -14,7 +14,7 @@
 # RGB, episodes, norm_stats are identical to the real-tactile datasets, so the same asset id is used).
 #   TASK   = task1 | sv2 | task3
 #   SUFFIX = predtac (dataset suffix written by robot_ft_predtac_build.sbatch)
-#   STEPS  = 20000 (smoke: 20)     SAVE = 5000      RESUME=1 to resume
+#   STEPS  = 20000 (smoke: 20)     SAVE = 5000      RESUME=1 to resume, RESUME=auto to resume only if a checkpoint exists (else start fresh)
 #   sbatch --job-name=task1 --export=ALL,TASK=task1 deploy/vision/n0vtla_posttrain_predtac_siyuan.sbatch
 set -uo pipefail
 : "${TASK:?TASK must be task1, sv2 or task3}"
@@ -52,5 +52,13 @@ print('DINOv2 config cached OK')
 "
 
 echo "=== $EXP_NAME: ckpt=$VTLA_PRETRAINED_CHECKPOINT data=$VTLA_DATASET_PATH asset=$VTLA_ASSET_ID steps=${STEPS:-20000} ==="
-bash train.sh --batch-size=64 --num-train-steps=${STEPS:-20000} --save-interval=${SAVE:-5000} ${RESUME:+--resume}
+# RESUME=1: force --resume.  RESUME=auto: resume only if the experiment dir holds a saved step (numeric dir, saves are atomic), else start from step 0
+# (a leftover dir without any checkpoint is overwritten).
+RFLAG=""
+CKD="$YQQ/N0-VTLA/checkpoints/vtla_tactile_posttrain/$EXP_NAME"
+if [ "${RESUME:-}" = "auto" ]; then
+  if ls -d "$CKD"/[0-9]* >/dev/null 2>&1; then echo "RESUME=auto: checkpoint found in $CKD -> --resume"; RFLAG="--resume"
+  else echo "RESUME=auto: no checkpoint in $CKD -> fresh start from step 0"; [ -d "$CKD" ] && RFLAG="--overwrite"; fi
+elif [ -n "${RESUME:-}" ]; then RFLAG="--resume"; fi
+bash train.sh --batch-size=64 --num-train-steps=${STEPS:-20000} --save-interval=${SAVE:-5000} $RFLAG
 echo "=== TRAINING SCRIPT EXITED ($EXP_NAME) ==="
