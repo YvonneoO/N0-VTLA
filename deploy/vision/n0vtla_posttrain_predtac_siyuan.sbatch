@@ -12,14 +12,14 @@
 # see Ego2Contact scripts/tools/robot_ft_predtac_build.sbatch). Same recipe as task1_posttrain_ours_vision8gpu / sv2 (bs64 on 8 GPUs, config
 # default lr schedule, init = Stage-1 human-data mid-train merged into the base) -- only the tactile VIDEOS of the dataset differ (state, action,
 # RGB, episodes, norm_stats are identical to the real-tactile datasets, so the same asset id is used).
-#   TASK   = task1 | sv2
+#   TASK   = task1 | sv2 | task3
 #   SUFFIX = predtac (dataset suffix written by robot_ft_predtac_build.sbatch)
 #   STEPS  = 20000 (smoke: 20)     SAVE = 5000      RESUME=1 to resume
 #   sbatch --job-name=task1 --export=ALL,TASK=task1 deploy/vision/n0vtla_posttrain_predtac_siyuan.sbatch
 set -uo pipefail
-: "${TASK:?TASK must be task1 or sv2}"
+: "${TASK:?TASK must be task1, sv2 or task3}"
 SUFFIX="${SUFFIX:-predtac}"
-YQQ=/scratch/project/prj-02-uq-llms-for-reasoning/yqq
+YQQ="${YQQ:-/scratch/project/prj-02-uq-llms-for-reasoning/yqq}"   # other account: --export=ALL,YQQ=<its yqq> --account=<its account> --output=<its logs>
 cd $YQQ/N0-VTLA
 
 module load Miniforge3/25.3.0-3
@@ -33,6 +33,7 @@ DATA_ROOT=$YQQ/data/n0vtla
 case "$TASK" in
   task1) export VTLA_DATASET_PATH="$DATA_ROOT/canonical_wetlab_task1_${SUFFIX}_train"; export VTLA_ASSET_ID=task1_tuberack_train ;;
   sv2)   export VTLA_DATASET_PATH="$DATA_ROOT/canonical_wetlab_smoketestv2_${SUFFIX}_train"; export VTLA_ASSET_ID=wetlab_smoketestv2_train ;;
+  task3) export VTLA_DATASET_PATH="$DATA_ROOT/canonical_wetlab_task3_${SUFFIX}_train"; export VTLA_ASSET_ID=task3_whiteboard_train ;;
   *) echo "unknown TASK=$TASK" >&2; exit 1 ;;
 esac
 [ -d "$VTLA_DATASET_PATH" ] || { echo "dataset $VTLA_DATASET_PATH missing"; exit 2; }
