@@ -61,4 +61,6 @@ if [ "${RESUME:-}" = "auto" ]; then
   else echo "RESUME=auto: no checkpoint in $CKD -> fresh start from step 0"; [ -d "$CKD" ] && RFLAG="--overwrite"; fi
 elif [ -n "${RESUME:-}" ]; then RFLAG="--resume"; fi
 bash train.sh --batch-size=64 --num-train-steps=${STEPS:-20000} --save-interval=${SAVE:-5000} $RFLAG
-echo "=== TRAINING SCRIPT EXITED ($EXP_NAME) ==="
+RC=$?
+echo "=== TRAINING SCRIPT EXITED ($EXP_NAME) rc=$RC ==="
+exit $RC
