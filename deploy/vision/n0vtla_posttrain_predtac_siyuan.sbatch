@@ -17,7 +17,7 @@
 #   STEPS  = 20000 (smoke: 20)     SAVE = 5000      RESUME=1 to resume, RESUME=auto to resume only if a checkpoint exists (else start fresh)
 #   sbatch --job-name=task1 --export=ALL,TASK=task1 deploy/vision/n0vtla_posttrain_predtac_siyuan.sbatch
 set -uo pipefail
-: "${TASK:?TASK must be task1, sv2 or task3}"
+: "${TASK:?TASK must be task1, sv2, task3 or task4}"
 SUFFIX="${SUFFIX:-predtac}"
 YQQ="${YQQ:-/scratch/project/prj-02-uq-llms-for-reasoning/yqq}"   # other account: --export=ALL,YQQ=<its yqq> --account=<its account> --output=<its logs>
 cd $YQQ/N0-VTLA
@@ -34,6 +34,7 @@ case "$TASK" in
   task1) export VTLA_DATASET_PATH="$DATA_ROOT/canonical_wetlab_task1_${SUFFIX}_train"; export VTLA_ASSET_ID=task1_tuberack_train ;;
   sv2)   export VTLA_DATASET_PATH="$DATA_ROOT/canonical_wetlab_smoketestv2_${SUFFIX}_train"; export VTLA_ASSET_ID=wetlab_smoketestv2_train ;;
   task3) export VTLA_DATASET_PATH="$DATA_ROOT/canonical_wetlab_task3_${SUFFIX}_train"; export VTLA_ASSET_ID=task3_whiteboard_train ;;
+  task4) export VTLA_DATASET_PATH="$DATA_ROOT/canonical_wetlab_task4_dual_post42_${SUFFIX}"; export VTLA_ASSET_ID=task4_dual_pour_post42 ;;   # dual-arm, 42 post-train episodes (dual42 plan)
   *) echo "unknown TASK=$TASK" >&2; exit 1 ;;
 esac
 [ -d "$VTLA_DATASET_PATH" ] || { echo "dataset $VTLA_DATASET_PATH missing"; exit 2; }
