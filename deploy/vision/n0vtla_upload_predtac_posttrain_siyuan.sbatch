@@ -17,7 +17,7 @@ SUFFIX="${SUFFIX:-predtacq}"
 YQQ=/scratch/project/prj-02-uq-llms-for-reasoning/yqq
 source $YQQ/env.sh
 HF=$YQQ/envs/n0vtla/bin/hf
-EXP="${TASK}_posttrain_ours_${SUFFIX}_vision8gpu"
+EXP="${EXP_NAME_OVERRIDE:-${TASK}_posttrain_ours_${SUFFIX}_vision8gpu}"   # EXP_NAME_OVERRIDE: experiment dir name when it differs (task4 40k runs)
 HFDIR="${HFDIR:-n0vtla_predtac_posttrain}"          # e.g. n0vtla_notactile_posttrain for the all-zero-tactile control
 CARD="${CARD:-n0vtla_predtac_posttrain.md}"
 D=$YQQ/N0-VTLA/checkpoints/vtla_tactile_posttrain/$EXP
