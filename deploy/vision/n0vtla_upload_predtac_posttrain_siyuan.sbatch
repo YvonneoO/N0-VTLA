@@ -25,6 +25,14 @@ D=$YQQ/N0-VTLA/checkpoints/vtla_tactile_posttrain/$EXP
 [[ -d "$D" ]] || { echo "ERROR: $D missing (training did not write checkpoints)" >&2; exit 2; }
 ls "$D"
 $HF upload qqyang/zihiao_real_test "$YQQ/N0-VTLA/docs/hf_cards/$CARD" "$HFDIR/README.md" --repo-type dataset --token "$HF_TOKEN"
-$HF upload qqyang/zihiao_real_test "$D" "$HFDIR/$EXP" --repo-type dataset --token "$HF_TOKEN" --exclude "*optimizer.pt" --exclude "*/optimizer.pt"
+# STEPS="5000 10000 ...": upload only these step dirs (a run that is still training: they are complete, saves are atomic); unset = the whole experiment dir
+if [ -n "${STEPS:-}" ]; then
+  for st in $STEPS; do
+    [[ -d "$D/$st" ]] || { echo "ERROR: $D/$st missing" >&2; exit 3; }
+    $HF upload qqyang/zihiao_real_test "$D/$st" "$HFDIR/$EXP/$st" --repo-type dataset --token "$HF_TOKEN" --exclude "*optimizer.pt" --exclude "*/optimizer.pt"
+  done
+else
+  $HF upload qqyang/zihiao_real_test "$D" "$HFDIR/$EXP" --repo-type dataset --token "$HF_TOKEN" --exclude "*optimizer.pt" --exclude "*/optimizer.pt"
+fi
 echo "https://huggingface.co/datasets/qqyang/zihiao_real_test/tree/main/$HFDIR/$EXP"
 echo UPLOAD_PREDTAC_POSTTRAIN_DONE
