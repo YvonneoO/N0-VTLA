@@ -27,7 +27,7 @@ ls "$D"
 $HF upload qqyang/zihiao_real_test "$YQQ/N0-VTLA/docs/hf_cards/$CARD" "$HFDIR/README.md" --repo-type dataset --token "$HF_TOKEN"
 # STEPS="5000 10000 ...": upload only these step dirs (a run that is still training: they are complete, saves are atomic); unset = the whole experiment dir
 if [ -n "${STEPS:-}" ]; then
-  for st in $STEPS; do
+  for st in ${STEPS//:/ }; do   # steps separated by ":" (sbatch --export cannot carry spaces)
     [[ -d "$D/$st" ]] || { echo "ERROR: $D/$st missing" >&2; exit 3; }
     $HF upload qqyang/zihiao_real_test "$D/$st" "$HFDIR/$EXP/$st" --repo-type dataset --token "$HF_TOKEN" --exclude "*optimizer.pt" --exclude "*/optimizer.pt"
   done
