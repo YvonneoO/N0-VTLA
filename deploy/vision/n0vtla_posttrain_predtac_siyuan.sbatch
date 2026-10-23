@@ -65,7 +65,10 @@ if [ "${RESUME:-}" = "auto" ]; then
     echo "RESUME=auto: checkpoint found in $CKD (latest step $LATEST) -> --resume"; RFLAG="--resume"
   else echo "RESUME=auto: no checkpoint in $CKD -> fresh start from step 0"; [ -d "$CKD" ] && RFLAG="--overwrite"; fi
 elif [ -n "${RESUME:-}" ]; then RFLAG="--resume"; fi
-bash train.sh --batch-size=64 --num-train-steps=${STEPS:-20000} --save-interval=${SAVE:-5000} $RFLAG
+# LRD: cosine decay length (config default 20000). For a run longer than 20k steps (segmented/resumed) EVERY segment must use the same LRD, else the LR
+# would sit flat at decay_lr after step 20000 or jump between segments.
+LRFLAG=""; [ -n "${LRD:-}" ] && LRFLAG="--lr-schedule.decay-steps=$LRD"
+bash train.sh --batch-size=64 --num-train-steps=${STEPS:-20000} --save-interval=${SAVE:-5000} $LRFLAG $RFLAG
 RC=$?
 echo "=== TRAINING SCRIPT EXITED ($EXP_NAME) rc=$RC ==="
 exit $RC
