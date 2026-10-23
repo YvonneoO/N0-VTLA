@@ -34,7 +34,8 @@ case "$TASK" in
   task1) export VTLA_DATASET_PATH="$DATA_ROOT/canonical_wetlab_task1_${SUFFIX}_train"; export VTLA_ASSET_ID=task1_tuberack_train ;;
   sv2)   export VTLA_DATASET_PATH="$DATA_ROOT/canonical_wetlab_smoketestv2_${SUFFIX}_train"; export VTLA_ASSET_ID=wetlab_smoketestv2_train ;;
   task3) export VTLA_DATASET_PATH="$DATA_ROOT/canonical_wetlab_task3_${SUFFIX}_train"; export VTLA_ASSET_ID=task3_whiteboard_train ;;
-  task4) export VTLA_DATASET_PATH="$DATA_ROOT/canonical_wetlab_task4_dual_post42_${SUFFIX}"; export VTLA_ASSET_ID=task4_dual_pour_post42 ;;   # dual-arm, 42 post-train episodes (dual42 plan)
+  task4) DSET="${DUALSET:-post42}"   # post42 = the 42 batch-1 post-train episodes; post92 = those + the 50 batch-2 episodes
+         export VTLA_DATASET_PATH="$DATA_ROOT/canonical_wetlab_task4_dual_${DSET}_${SUFFIX}"; export VTLA_ASSET_ID=task4_dual_pour_${DSET} ;;   # dual-arm, 42 post-train episodes (dual42 plan)
   *) echo "unknown TASK=$TASK" >&2; exit 1 ;;
 esac
 [ -d "$VTLA_DATASET_PATH" ] || { echo "dataset $VTLA_DATASET_PATH missing"; exit 2; }
