@@ -59,10 +59,17 @@ def per_seq(args) -> dict:
             rec["tactile_max"] = [float(pa.get("tactile_max_left", np.nan)), float(pa.get("tactile_max_right", np.nan))]
             fp = {}
             for g in GRIDS:
-                a = p[g][...]
-                fp[g] = dict(n=int(a.shape[0]), max=float(a.max()), min=float(a.min()),
-                             contact_frac=float((a.reshape(len(a), -1).max(1) > 0.05).mean()),
-                             active=(a.reshape(len(a), -1) > 0).any(0).astype(np.uint8).tolist())
+                a = p[g][...].reshape(p[g].shape[0], -1)
+                bad = ~np.isfinite(a)
+                fin = np.where(bad, 0.0, a)
+                pos = fin[fin > 0]
+                rng = np.random.default_rng(len(a))
+                fp[g] = dict(n=int(a.shape[0]), nan_frame_frac=float(bad.any(1).mean()), nan_cell_frac=float(bad.mean()),
+                             max=float(fin.max()), min=float(fin.min()),
+                             pos_q=[float(x) for x in np.percentile(pos, [50, 90, 99, 99.9])] if len(pos) else [],
+                             pos_sample=rng.choice(pos, size=min(2000, len(pos)), replace=False).tolist() if len(pos) else [],
+                             contact_frac=float((fin.max(1) > 0).mean()),
+                             active=(fin > 0).any(0).astype(np.uint8).tolist())
             rec["grids"] = fp
             nmin = min(list(n.values()) + [fp[g]["n"] for g in GRIDS])
             rec["frames"] = nmin
@@ -70,6 +77,17 @@ def per_seq(args) -> dict:
     except Exception as e:  # noqa: BLE001
         rec["error"] = f"{type(e).__name__}: {e}"[:200]
     return rec
+
+
+def _task_spread(ok: list[dict]) -> dict:
+    """Per-task median of the per-seq q99.9 of positive values (both hands): is force scale task-dependent?"""
+    by = {}
+    for s in ok:
+        q = [s["grids"][g]["pos_q"][3] for g in GRIDS if s["grids"][g]["pos_q"]]
+        if q:
+            by.setdefault(s["task"], []).append(max(q))
+    med = np.array([np.median(v) for v in by.values() if len(v) >= 3])
+    return dict(n_tasks_ge3_seqs=int(len(med)), task_median_q999_q10_50_90=[float(x) for x in np.percentile(med, [10, 50, 90])] if len(med) else [])
 
 
 def read_cost(paths: list[Path], rng, k: int = 30) -> dict:
@@ -94,12 +112,14 @@ def main() -> None:
     ap.add_argument("out", type=Path)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--future", type=int, default=50)
+    ap.add_argument("--no-layout", action="store_true", help="skip printing the layout lines (already seen)")
     args = ap.parse_args()
     files = sorted(args.root.glob("*/*/*.hdf5"))
     print(f"{len(files)} hdf5 files under {args.root}", flush=True)
     res = dict(root=str(args.root), n_files=len(files), layout_example=layout(files[0]))
-    for k, v in res["layout_example"].items():
-        print(f"EGT|L {k} {json.dumps(v)[:300]}", flush=True)
+    if not args.no_layout:
+        for k, v in res["layout_example"].items():
+            print(f"EGT|L {k} {json.dumps(v)[:300]}", flush=True)
 
     with Pool(args.workers) as pool:
         seqs = pool.map(per_seq, [(p, args.future) for p in files], chunksize=8)
@@ -128,6 +148,16 @@ def main() -> None:
         active_cells={g: int(act[g].sum()) for g in GRIDS},
         active_mask_21x21={g: act[g].reshape(21, 21).astype(int).tolist() for g in GRIDS},
         n_tasks=len({s["task"] for s in ok}),
+        nan_frame_frac_median={g: float(np.median([s["grids"][g]["nan_frame_frac"] for s in ok])) for g in GRIDS},
+        seqs_with_any_nan={g: int(sum(s["grids"][g]["nan_frame_frac"] > 0 for s in ok)) for g in GRIDS},
+        seqs_all_nan={g: int(sum(s["grids"][g]["nan_frame_frac"] >= 1 for s in ok)) for g in GRIDS},
+        nan_cell_frac_mean={g: float(np.mean([s["grids"][g]["nan_cell_frac"] for s in ok])) for g in GRIDS},
+        seqs_no_contact={g: int(sum(s["grids"][g]["contact_frac"] == 0 for s in ok)) for g in GRIDS},
+        pos_value_q50_90_99_999_pooled={g: [float(x) for x in np.percentile(np.concatenate(
+            [s["grids"][g]["pos_sample"] for s in ok if s["grids"][g]["pos_sample"]]), [50, 90, 99, 99.9])] for g in GRIDS},
+        seq_max_q10_50_90={g: [float(x) for x in np.percentile([s["grids"][g]["max"] for s in ok], [10, 50, 90])] for g in GRIDS},
+        seqs_max_le_1={g: int(sum(s["grids"][g]["max"] <= 1.0 for s in ok)) for g in GRIDS},
+        task_seq_max_spread=_task_spread(ok),
     )
     splits = {}
     built = {str(p.relative_to(args.root)) for p in files}
@@ -148,14 +178,15 @@ def main() -> None:
     res["splits"] = splits
     res["read_cost_one_frame_3views_2grids"] = read_cost(files, np.random.default_rng(0))
     res["per_seq"] = [{k: v for k, v in s.items() if k != "grids"} | (
-        {"grids": {g: {kk: vv for kk, vv in s["grids"][g].items() if kk != "active"} for g in GRIDS}} if "grids" in s else {})
-        for s in seqs]
+        {"grids": {g: {kk: vv for kk, vv in s["grids"][g].items() if kk not in ("active", "pos_sample")} for g in GRIDS}}
+        if "grids" in s else {}) for s in seqs]
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(res))
     for k, v in res["summary"].items():
         if k == "active_mask_21x21":
-            for g, m in v.items():
-                print(f"EGT|S active {g} " + "/".join("".join(map(str, r)) for r in m), flush=True)
+            if not args.no_layout:
+                for g, m in v.items():
+                    print(f"EGT|S active {g} " + "/".join("".join(map(str, r)) for r in m), flush=True)
         else:
             print(f"EGT|S {k} {json.dumps(v)}", flush=True)
     for k, v in res["splits"].items():
