@@ -26,6 +26,10 @@ PY=$YQQ/envs/n0vtla/bin/python
 CLONE=$YQQ/N0-VTLA_touchscale
 IN=$YQQ/data/touchscale_midtrain
 cd $CLONE
+# The env's n0vtla is an EDITABLE install of the live checkout ($YQQ/N0-VTLA); put this clone first so the
+# training imports its own n0vtla package and scripts, not the live checkout's.
+export PYTHONPATH=$CLONE:$CLONE/scripts${PYTHONPATH:+:$PYTHONPATH}
+$PY -c "import n0vtla, n0vtla.training.itw_online_dataset as d, itw_pressure as ip; print('n0vtla from', n0vtla.__file__); print('itw_pressure from', ip.__file__); assert '$CLONE' in n0vtla.__file__ and hasattr(ip, 'aligned_timeline_h5')" || exit 1
 export PYTHONDONTWRITEBYTECODE=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True NCCL_DEBUG=WARN
 export HF_HOME=$YQQ/N0-VTLA/models/huggingface HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0
 export VTLA_ITW_RAW_ROOT=/scratch/project/prj-02-phai-lab/dayou/rss_27/touchscale_data
