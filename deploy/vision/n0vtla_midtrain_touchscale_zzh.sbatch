@@ -35,7 +35,7 @@ export HF_HOME=$YQQ/N0-VTLA/models/huggingface HF_HUB_OFFLINE=0 TRANSFORMERS_OFF
 export VTLA_ITW_RAW_ROOT=/scratch/project/prj-02-phai-lab/dayou/rss_27/touchscale_data
 export VTLA_ITW_EPISODE_LIST_JSON=$IN/manifest.json VTLA_ITW_EPISODE_LIST_KEY=$SPLIT_KEY
 export VTLA_ITW_INDEX_CACHE=$IN/index_${SPLIT_KEY}.json
-export VTLA_ITW_NORMALIZATION=$IN/normalization_pad30_per_task_scale_touchscale.json
+export VTLA_ITW_NORMALIZATION=$IN/normalization_pad30_per_task_scale_touchscale_tacwam.json
 export VTLA_PRETRAINED_CHECKPOINT=$YQQ/N0-VTLA/checkpoints/n0-vtla-base
 export VTLA_ITW_PAIR_SHUFFLE_SEED="${PAIR_SHUFFLE_SEED:-}"
 NUM_TRAIN_STEPS="${NUM_TRAIN_STEPS:-20000}"; SAVE_INTERVAL="${SAVE_INTERVAL:-500}"
