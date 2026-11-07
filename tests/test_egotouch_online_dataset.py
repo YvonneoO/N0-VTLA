@@ -80,6 +80,25 @@ class EgoTouchDatasetTests(unittest.TestCase):
             right = s["observation.image.right_wrist_right_tactile"][1] > 0
             self.assertGreater((left == right[:, ::-1]).mean(), 0.99)
 
+    def test_jpeg_repack_reads_like_the_source(self):
+        import sys
+
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+        import repack_egotouch_jpeg as R
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src, dst = Path(tmp) / "src" / "Home" / "t", Path(tmp) / "dst"
+            src.mkdir(parents=True)
+            _write(src / "seq.hdf5")
+            self.assertEqual(R.repack_one((src / "seq.hdf5", dst / "seq.hdf5", 95))[1], "ok")
+            a = E.EgoTouchOnlineTactileDataset([src / "seq.hdf5"])[30]
+            b = E.EgoTouchOnlineTactileDataset([dst / "seq.hdf5"])[30]
+            for key in E.TACTILE_KEYS:
+                np.testing.assert_array_equal(a[key], b[key])
+            for key in E.RGB_VIEWS:
+                self.assertEqual(b[key].shape, (224, 224, 3))
+            self.assertEqual(a["task"], b["task"])
+
     def test_short_sequence_skipped(self):
         with tempfile.TemporaryDirectory() as tmp:
             good, short = Path(tmp) / "a.hdf5", Path(tmp) / "b.hdf5"

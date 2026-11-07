@@ -27,7 +27,10 @@ YQQ=/scratch/project/prj-02-uq-llms-for-reasoning/yqq
 source $YQQ/env.sh
 PY=$YQQ/envs/n0vtla/bin/python
 CLONE=$YQQ/N0-VTLA_egotouch
-IN=$YQQ/data/egotouch_midtrain
+# per-frame-JPEG repack (n0vtla_egotouch_jpeg_repack_siyuan.sbatch); the gzip build e2c_dl/EgoTouch_hdf5_3view_224
+# + data/egotouch_midtrain also work, ~30x slower random frame reads
+DATA_ROOT="${DATA_ROOT:-$YQQ/data/EgoTouch_jpeg224}"
+IN="${IN:-$YQQ/data/egotouch_midtrain_jpeg}"
 cd $CLONE
 # The env's n0vtla is an EDITABLE install of the live checkout ($YQQ/N0-VTLA); put this clone first so the
 # training imports its own n0vtla package and scripts, not the live checkout's.
@@ -35,7 +38,7 @@ export PYTHONPATH=$CLONE:$CLONE/scripts${PYTHONPATH:+:$PYTHONPATH}
 $PY -c "import n0vtla, n0vtla.training.egotouch_online_dataset as e, itw_pressure as ip; print('n0vtla from', n0vtla.__file__); print('itw_pressure from', ip.__file__); assert '$CLONE' in n0vtla.__file__ and '$CLONE' in ip.__file__" || exit 1
 export PYTHONDONTWRITEBYTECODE=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True NCCL_DEBUG=WARN
 export HF_HOME=$YQQ/N0-VTLA/models/huggingface HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0   # as the siyuan post-train launchers
-export VTLA_ITW_RAW_ROOT=$YQQ/e2c_dl/EgoTouch_hdf5_3view_224
+export VTLA_ITW_RAW_ROOT=$DATA_ROOT
 export VTLA_ITW_EPISODE_LIST_JSON=$IN/manifest.json VTLA_ITW_EPISODE_LIST_KEY=$SPLIT_KEY
 export VTLA_ITW_INDEX_CACHE=$IN/index_${SPLIT_KEY}.json
 unset VTLA_ITW_NORMALIZATION VTLA_ITW_PAIR_SHUFFLE_SEED       # EgoTouch grids are already normalized; no shuffle

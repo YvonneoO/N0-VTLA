@@ -1,5 +1,6 @@
 """Online Stage-1 (mid-train) dataset over the EgoTouch 3-view@224 HDF5 build (one <Scene>/<task>/<seq>.hdf5 per
-sequence, built by Ego2Contact's scripts/core/convert_to_hdf5.py --img_size 224).
+sequence, built by Ego2Contact's scripts/core/convert_to_hdf5.py --img_size 224), or its per-frame-JPEG repack
+(scripts/repack_egotouch_jpeg.py; same layout, much faster random frame reads).
 
 Produces the same raw sample dict as itw_online_dataset.ITWOnlineTactileDataset, so every transform after it
 (Stage1ObservationOnly -> CanonicalTactileInputs -> model transforms) is unchanged:
@@ -156,7 +157,12 @@ class _SequenceCache:
         self.task = str(self.file["metadata"].attrs.get("task_name", ""))
 
     def rgb(self, view: str, t: int) -> np.ndarray:
-        return self.file["images"][view][t]
+        d = self.file["images"][view]
+        if d.dtype.kind == "O":                    # JPEG repack (scripts/repack_egotouch_jpeg.py): one JPEG per frame
+            import cv2
+
+            return cv2.cvtColor(cv2.imdecode(np.asarray(d[t], np.uint8), cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB)
+        return d[t]
 
     def pads(self, hand: str, frames: list[int]) -> tuple[dict[str, np.ndarray], list[int]]:
         """Pad arrays over the unique sorted `frames` + the position of each requested frame in them."""
