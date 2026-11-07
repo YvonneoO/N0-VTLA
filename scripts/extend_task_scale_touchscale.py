@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from multiprocessing import Pool
 from pathlib import Path
 
@@ -29,8 +30,9 @@ import h5py
 import numpy as np
 import pandas as pd
 
-HANDS = ("left", "right")
-PAD_IDS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from itw_pressure import HANDS, PAD_IDS  # noqa: E402  (the 15 glove pad ids, same as tacWAM pad_geometry)
+
 SAMPLES_PER_RECORDING = 16
 SEED = 42
 SCALE_QUANTILE = 99.9
