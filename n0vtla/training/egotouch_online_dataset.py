@@ -136,13 +136,12 @@ def index_sequences(paths: list[Path], *, min_frames: int = 51, cache_path: str 
 
 
 class _SequenceCache:
-    """Open HDF5 handle + both hands' pad arrays for ONE sequence (opened lazily inside each worker)."""
+    """Open HDF5 handle of ONE sequence (opened lazily inside each worker). Only the frames a sample needs are read:
+    shuffled training switches sequence on almost every sample, so loading whole grids would dominate the cost."""
 
     def __init__(self):
         self.path: Path | None = None
         self.file = None
-        self.pads: dict[str, dict[str, np.ndarray]] = {}
-        self.n = 0
         self.task = ""
 
     def load(self, path: Path) -> None:
@@ -154,12 +153,16 @@ class _SequenceCache:
             self.file.close()
         self.file = h5py.File(path, "r")
         self.path = path
-        self.pads = {h: grid_to_pad_arrays(self.file["pressure"][f"{h}_pressure_grid"][...], h) for h in ("left", "right")}
-        self.n = min(a.shape[0] for pads in self.pads.values() for a in pads.values())
         self.task = str(self.file["metadata"].attrs.get("task_name", ""))
 
     def rgb(self, view: str, t: int) -> np.ndarray:
         return self.file["images"][view][t]
+
+    def pads(self, hand: str, frames: list[int]) -> tuple[dict[str, np.ndarray], list[int]]:
+        """Pad arrays over the unique sorted `frames` + the position of each requested frame in them."""
+        uniq = sorted(set(frames))
+        grid = self.file["pressure"][f"{hand}_pressure_grid"][uniq]
+        return grid_to_pad_arrays(grid, hand), [uniq.index(t) for t in frames]
 
 
 class EgoTouchOnlineTactileDataset(torch.utils.data.Dataset):
@@ -172,6 +175,7 @@ class EgoTouchOnlineTactileDataset(torch.utils.data.Dataset):
         self.episodes, self.sample_ep, self.sample_t = index_sequences(sequences, cache_path=index_cache)
         if len(self.sample_ep) == 0:
             raise ValueError("no valid EgoTouch sequences indexed")
+        self.lengths = np.bincount(self.sample_ep, minlength=len(self.episodes))
         self._cache = _SequenceCache()
 
     def __len__(self) -> int:
@@ -182,13 +186,13 @@ class EgoTouchOnlineTactileDataset(torch.utils.data.Dataset):
         c = self._cache
         c.load(path)
         h = self.future_frame_offset
-        t_future = min(t + h, c.n - 1)
+        t_future = min(t + h, int(self.lengths[int(self.sample_ep[idx])]) - 1)
         future_is_pad = t_future != t + h
         sample: dict = {"task": task_prompt(c.task)}
         for out_key, view in RGB_VIEWS.items():
             sample[out_key] = unsquash(c.rgb(view, t), self.source_aspect)
         for out_key, hand in TACTILE_KEYS.items():
-            pads = c.pads[hand]
-            sample[out_key] = np.stack([rasterize_pressure_frame(pads, i, hand=hand) for i in (0, t, t_future)], axis=0)
+            pads, pos = c.pads(hand, [0, t, t_future])
+            sample[out_key] = np.stack([rasterize_pressure_frame(pads, i, hand=hand) for i in pos], axis=0)
             sample[f"{out_key}_is_pad"] = np.array([False, False, future_is_pad], dtype=bool)
         return sample
