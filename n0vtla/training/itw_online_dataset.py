@@ -43,7 +43,9 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from itw_pressure import (  # noqa: E402
     aligned_timeline,
+    aligned_timeline_h5,
     load_hand_pressure_arrays,
+    load_hand_pressure_arrays_h5,
     load_normalization,
     rasterize_pressure_frame,
 )
@@ -100,6 +102,15 @@ def read_task_name_for_norm(ep_dir: Path) -> str | None:
     return str(name) if name else None
 
 
+def is_h5_episode(ep_dir: Path) -> bool:
+    """TouchScale packaging: timestamps and glove data live in episode.h5 (no csv / *_hand_data.npz)."""
+    return not (ep_dir / "left_hand_data.npz").exists() and (ep_dir / "episode.h5").exists()
+
+
+def episode_timeline(ep_dir: Path):
+    return aligned_timeline_h5(ep_dir) if is_h5_episode(ep_dir) else aligned_timeline(ep_dir)
+
+
 def letterbox_resize(img: np.ndarray, size: int = 224) -> np.ndarray:
     """Same aspect-preserving letterbox as scripts/itw_pressure.py::write_aligned_rgb,
     applied to a single already-decoded frame instead of a whole video."""
@@ -114,7 +125,8 @@ def letterbox_resize(img: np.ndarray, size: int = 224) -> np.ndarray:
     return canvas
 
 
-def index_episodes(episode_dirs: list[Path], *, min_frames: int = 51) -> list[tuple[Path, int]]:
+def index_episodes(episode_dirs: list[Path], *, min_frames: int = 51,
+                   cache_path: str | Path | None = None) -> tuple[list[Path], np.ndarray, np.ndarray]:
     """Flat (episode_dir, frame_position) sample index.
 
     Every frame position in an episode's aligned 30Hz timeline is indexed as a valid
@@ -126,12 +138,31 @@ def index_episodes(episode_dirs: list[Path], *, min_frames: int = 51) -> list[tu
     scripts/itw_pressure.py enforces at offline-conversion time) are skipped with a
     warning instead of aborting the whole index build; one bad recording should not
     block training on the other tens of thousands.
+
+    Returns (episode_dirs_kept, sample_episode_id int32, sample_frame int32): one entry per sample,
+    as two compact arrays instead of a Python list of tuples (tens of millions of samples on the
+    TouchScale corpus would otherwise cost several GB per DDP rank and per dataloader worker).
+
+    cache_path: optional JSON {"episodes": [[path, n_frames], ...]} written by a previous build (e.g.
+    scripts/build_itw_index_cache.py); when it exists the per-episode alignment pass is skipped. It must
+    list the same episodes in the same order as `episode_dirs` (checked).
     """
-    index: list[tuple[Path, int]] = []
+    if cache_path is not None and Path(cache_path).exists():
+        rows = json.loads(Path(cache_path).read_text())["episodes"]
+        want = [str(p) for p in episode_dirs]
+        have = [r[0] for r in rows]
+        kept_set = set(have)
+        if any(h not in set(want) for h in have) or [w for w in want if w in kept_set] != have:
+            raise ValueError(f"index cache {cache_path} does not match the requested episode list")
+        kept = [Path(r[0]) for r in rows]
+        counts = np.array([int(r[1]) for r in rows], np.int64)
+        logging.info("itw_online_dataset: index cache %s: %d episodes, %d samples", cache_path, len(kept), counts.sum())
+        return kept, np.repeat(np.arange(len(kept), dtype=np.int32), counts), _frames(counts)
+    kept, counts = [], []
     n_skipped = 0
     for ep_dir in episode_dirs:
         try:
-            mapping, _audit = aligned_timeline(ep_dir)
+            mapping, _audit = episode_timeline(ep_dir)
         except (ValueError, OSError, FileNotFoundError) as exc:
             logging.warning("itw_online_dataset: skipping %s (%s)", ep_dir, exc)
             n_skipped += 1
@@ -141,12 +172,22 @@ def index_episodes(episode_dirs: list[Path], *, min_frames: int = 51) -> list[tu
             logging.warning("itw_online_dataset: skipping %s (only %d aligned frames)", ep_dir, n)
             n_skipped += 1
             continue
-        index.extend((ep_dir, t) for t in range(n))
+        kept.append(ep_dir)
+        counts.append(n)
+    counts = np.array(counts, np.int64)
     logging.info(
         "itw_online_dataset: indexed %d episodes (%d skipped), %d total samples",
-        len(episode_dirs) - n_skipped, n_skipped, len(index),
+        len(kept), n_skipped, int(counts.sum()),
     )
-    return index
+    return kept, np.repeat(np.arange(len(kept), dtype=np.int32), counts), _frames(counts)
+
+
+def _frames(counts: np.ndarray) -> np.ndarray:
+    """[0..n0-1, 0..n1-1, ...] as int32."""
+    if len(counts) == 0:
+        return np.zeros(0, np.int32)
+    starts = np.repeat(np.cumsum(counts) - counts, counts)
+    return (np.arange(int(counts.sum()), dtype=np.int64) - starts).astype(np.int32)
 
 
 def task_scale_coverage(episode_dirs: list[Path], normalization: dict) -> dict:
@@ -189,16 +230,23 @@ class _EpisodeCache:
         if self.episode_dir == episode_dir:
             return
         self.episode_dir = episode_dir
-        self.mapping, _audit = aligned_timeline(episode_dir)
+        self.mapping, _audit = episode_timeline(episode_dir)
         # Resolved once per episode (task identity is episode-level, not per-frame) --
         # ignored by load_hand_pressure_arrays/normalize_pressure unless `normalization`
         # is a per-task-scale file. See read_task_name_for_norm's docstring for why
         # this is deliberately NOT the same field as the language-instruction prompt.
         task_name = read_task_name_for_norm(episode_dir)
-        self.pressure = {
-            hand: load_hand_pressure_arrays(episode_dir / npz_name, normalization, hand=hand, task_name=task_name)
-            for hand, npz_name in (("left", "left_hand_data.npz"), ("right", "right_hand_data.npz"))
-        }
+        if is_h5_episode(episode_dir):
+            self.pressure = {
+                hand: load_hand_pressure_arrays_h5(episode_dir / "episode.h5", normalization, hand=hand,
+                                                   task_name=task_name)
+                for hand in ("left", "right")
+            }
+        else:
+            self.pressure = {
+                hand: load_hand_pressure_arrays(episode_dir / npz_name, normalization, hand=hand, task_name=task_name)
+                for hand, npz_name in (("left", "left_hand_data.npz"), ("right", "right_hand_data.npz"))
+            }
         self.decoders = {}  # lazy: only open the views actually requested
 
     def rgb_frame(self, view: str, frame_index: int) -> np.ndarray:
@@ -233,17 +281,31 @@ class ITWOnlineTactileDataset(torch.utils.data.Dataset):
         normalization_path: str | Path,
         *,
         future_frame_offset: int = 50,
+        index_cache: str | Path | None = None,
+        pair_shuffle_seed: int | None = None,
     ):
+        """pair_shuffle_seed: ablation. When set, the tactile triplet (baseline, current, future) of sample i is
+        taken from sample perm[i] of a FIXED seeded permutation of the whole sample index (almost always another
+        episode), while RGB, prompt and everything else stay those of sample i. Tactile dynamics within the
+        triplet are intact; only the visual-tactile correspondence is broken. Same permutation on every rank,
+        worker and resume (it depends only on the seed and the episode list)."""
         self.normalization = load_normalization(normalization_path)
         self.future_frame_offset = int(future_frame_offset)
-        self.index = index_episodes(episode_dirs)
-        if not self.index:
+        self.episodes, self.sample_ep, self.sample_t = index_episodes(episode_dirs, cache_path=index_cache)
+        if len(self.sample_ep) == 0:
             raise ValueError("no valid episodes indexed -- see the warnings logged above")
+        self.pair_perm = None
+        if pair_shuffle_seed is not None:
+            self.pair_perm = np.random.default_rng(int(pair_shuffle_seed)).permutation(len(self.sample_ep))
+            same = float(np.mean(self.sample_ep[self.pair_perm] == self.sample_ep))
+            logging.info("itw_online_dataset: visual-tactile PAIR SHUFFLE on (seed %s); tactile from the same "
+                         "episode for %.4f%% of samples", pair_shuffle_seed, 100 * same)
         self._cache = _EpisodeCache()
+        self._tac_cache = _EpisodeCache()
         self._task_cache: dict[Path, str] = {}
 
     def __len__(self) -> int:
-        return len(self.index)
+        return len(self.sample_ep)
 
     def _task(self, ep_dir: Path) -> str:
         if ep_dir not in self._task_cache:
@@ -251,13 +313,19 @@ class ITWOnlineTactileDataset(torch.utils.data.Dataset):
         return self._task_cache[ep_dir]
 
     def __getitem__(self, idx: int) -> dict:
-        ep_dir, t = self.index[idx]
+        ep_dir, t = self.episodes[int(self.sample_ep[idx])], int(self.sample_t[idx])
         self._cache.load(ep_dir, self.normalization)
         mapping = self._cache.mapping
-        n = len(mapping["master_timestamp_ns"])
+        tac_cache, tac_t = self._cache, t
+        if self.pair_perm is not None:
+            j = int(self.pair_perm[idx])
+            tac_cache, tac_t = self._tac_cache, int(self.sample_t[j])
+            tac_cache.load(self.episodes[int(self.sample_ep[j])], self.normalization)
+        tac_mapping = tac_cache.mapping
+        n = len(tac_mapping["master_timestamp_ns"])
         h = self.future_frame_offset
-        t_future = min(t + h, n - 1)
-        future_is_pad = t_future != t + h  # tail-clamped -> not a valid InfoNCE target
+        t_future = min(tac_t + h, n - 1)
+        future_is_pad = t_future != tac_t + h  # tail-clamped -> not a valid InfoNCE target
 
         sample: dict = {"task": self._task(ep_dir)}
 
@@ -266,10 +334,10 @@ class ITWOnlineTactileDataset(torch.utils.data.Dataset):
             sample[out_key] = letterbox_resize(self._cache.rgb_frame(view, frame_idx))
 
         for out_key, (hand, _npz_name) in TACTILE_KEYS.items():
-            arrays = self._cache.pressure[hand]
-            hand_index = mapping[f"{hand}_index"]
+            arrays = tac_cache.pressure[hand]
+            hand_index = tac_mapping[f"{hand}_index"]
             i_baseline, i_current, i_future = (
-                int(hand_index[0]), int(hand_index[t]), int(hand_index[t_future])
+                int(hand_index[0]), int(hand_index[tac_t]), int(hand_index[t_future])
             )
             baseline = rasterize_pressure_frame(arrays, i_baseline, hand=hand)
             current = rasterize_pressure_frame(arrays, i_current, hand=hand)
@@ -310,6 +378,8 @@ def create_stage1_data_loader(
     *,
     future_frame_offset: int,
     default_prompt: str | None,
+    index_cache: str | Path | None = None,
+    pair_shuffle_seed: int | None = None,
 ):
     """Online-loader counterpart of n0vtla.training.data_loader.create_data_loader, for
     scripts/train_stage1_online.py.
@@ -336,7 +406,8 @@ def create_stage1_data_loader(
     from n0vtla.policies import canonical_tactile_policy
 
     model_cfg = config.model
-    raw_dataset = ITWOnlineTactileDataset(episode_dirs, normalization_path, future_frame_offset=future_frame_offset)
+    raw_dataset = ITWOnlineTactileDataset(episode_dirs, normalization_path, future_frame_offset=future_frame_offset,
+                                         index_cache=index_cache, pair_shuffle_seed=pair_shuffle_seed)
     model_transforms = _config.ModelTransformFactory(default_prompt=default_prompt)(model_cfg)
     dataset = _data.TransformedDataset(raw_dataset, [
         canonical_tactile_policy.Stage1ObservationOnly(model_cfg.action_dim, model_cfg.action_horizon),

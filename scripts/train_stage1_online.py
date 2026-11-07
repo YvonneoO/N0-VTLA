@@ -37,6 +37,11 @@ this script never touches config.data):
                                 same episodes. Requires VTLA_ITW_EPISODE_LIST_KEY.
     VTLA_ITW_EPISODE_LIST_KEY  required if VTLA_ITW_EPISODE_LIST_JSON is set -- which key under the
                                 manifest's "splits" to use, e.g. "20pct".
+    VTLA_ITW_INDEX_CACHE       optional path to a precomputed sample index (scripts/build_touchscale_midtrain_inputs.py)
+                                for the same episode list; skips re-aligning every episode on each rank/launch.
+    VTLA_ITW_PAIR_SHUFFLE_SEED optional int. Ablation: tactile (baseline/current/future) of every sample comes from a
+                                fixed seeded random other sample; RGB stays (visual-tactile correspondence broken).
+Episodes may be in the original tacWAM layout (csv + *_hand_data.npz) or the TouchScale layout (episode.h5).
 """
 from __future__ import annotations
 
@@ -185,9 +190,13 @@ def train_loop_stage1_online(config: _config.TrainConfig) -> None:
     future_frame_offset = int(os.environ.get("VTLA_STAGE1_FUTURE_OFFSET", "50"))
     default_prompt = os.environ.get("VTLA_DEFAULT_PROMPT", "Perform the task.")
 
+    index_cache = os.environ.get("VTLA_ITW_INDEX_CACHE") or None
+    shuffle_seed = os.environ.get("VTLA_ITW_PAIR_SHUFFLE_SEED")
+    pair_shuffle_seed = int(shuffle_seed) if shuffle_seed not in (None, "") else None
     loader = _online.create_stage1_data_loader(
         config, episode_dirs, normalization_path,
         future_frame_offset=future_frame_offset, default_prompt=default_prompt,
+        index_cache=index_cache, pair_shuffle_seed=pair_shuffle_seed,
     )
     # Bound the shared loader's infinite iterator to one epoch so DDP actually reshuffles.
     torch_loader = loader._data_loader.torch_loader
