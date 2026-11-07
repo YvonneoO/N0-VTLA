@@ -169,6 +169,33 @@ def aligned_timeline(episode):
             if not np.isfinite(seconds).all():
                 raise ValueError(f"Nonfinite tactile timestamps: {hand}")
             streams[hand] = np.rint(seconds * 1e9).astype(np.int64)
+    return _align_streams(streams, frame_ids, episode.name)
+
+
+def aligned_timeline_h5(episode):
+    """aligned_timeline for the TouchScale packaging (one episode.h5 per episode, no csv/npz):
+    camera timestamps + mp4 frame indices from obs/video/<view>/{epoch,src_idx}, glove timestamps
+    from obs/tactile/raw/<hand>/t_epoch. Same 30 Hz master timeline and QC gates as aligned_timeline."""
+    import h5py
+
+    episode = Path(episode)
+    streams, frame_ids = {}, {}
+    with h5py.File(episode / "episode.h5", "r") as f:
+        for view in RGB_VIEWS:
+            seconds = np.asarray(f[f"obs/video/{view}/epoch"][:], np.float64)
+            if not np.isfinite(seconds).all():
+                raise ValueError(f"Nonfinite camera timestamps: {view}")
+            frame_ids[view] = np.asarray(f[f"obs/video/{view}/src_idx"][:], np.int64)
+            streams[view] = np.rint(seconds * 1e9).astype(np.int64)
+        for hand in HANDS:
+            seconds = np.asarray(f[f"obs/tactile/raw/{hand}/t_epoch"][:], np.float64)
+            if not np.isfinite(seconds).all():
+                raise ValueError(f"Nonfinite tactile timestamps: {hand}")
+            streams[hand] = np.rint(seconds * 1e9).astype(np.int64)
+    return _align_streams(streams, frame_ids, episode.name)
+
+
+def _align_streams(streams, frame_ids, episode_name):
     if any(len(t) < 2 for t in streams.values()):
         raise ValueError("Each stream must contain at least two timestamps")
     start, end = max(t[0] for t in streams.values()), min(t[-1] for t in streams.values())
@@ -196,7 +223,7 @@ def aligned_timeline(episode):
         # individual bad frames instead of losing the whole recording.
         if pass_rate < QC_PASS_RATE:
             raise ValueError(
-                f"{episode.name}/{name}: only {pass_rate:.1%} of frames within "
+                f"{episode_name}/{name}: only {pass_rate:.1%} of frames within "
                 f"{QC_ALIGNMENT_NS / 1e6} ms (need >={QC_PASS_RATE:.0%})"
             )
         mapping[name + "_index"] = index
@@ -255,6 +282,17 @@ def load_hand_pressure_arrays(npz_path, norm, *, hand, task_name=None):
     with np.load(npz_path, allow_pickle=False) as z:
         return {
             str(p): normalize_pressure(z[f"tactile_{p}"], norm, hand, p, task_name=task_name)
+            for p in PAD_IDS
+        }
+
+
+def load_hand_pressure_arrays_h5(h5_path, norm, *, hand, task_name=None):
+    """load_hand_pressure_arrays for the TouchScale episode.h5 (obs/tactile/raw/<hand>/pad_<id>)."""
+    import h5py
+
+    with h5py.File(h5_path, "r") as f:
+        return {
+            str(p): normalize_pressure(f[f"obs/tactile/raw/{hand}/pad_{p}"][:], norm, hand, p, task_name=task_name)
             for p in PAD_IDS
         }
 
