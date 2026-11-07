@@ -26,4 +26,4 @@ cd $YQQ
   awk -v b="$b" -v n="$n" -v m="$m" -v p="$p" 'BEGIN{printf "%.1f\t%s\t%s\t%s\n", b/2^30, n, m, p}'
 done | sort -t$'\t' -k1,1 -gr > $OUT
 awk -F'\t' '$1 >= 1 || $2 >= 20000' $OUT | sed 's/^/DSK|/'
-showquota | sed 's/^/DSK|/'
+(command -v showquota >/dev/null && showquota || /sw/local/bin/showquota) 2>/dev/null | sed 's/^/DSK|/'; exit 0

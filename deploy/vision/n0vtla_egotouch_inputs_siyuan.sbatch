@@ -12,13 +12,13 @@
 #     so the live checkout yqq/N0-VTLA is never pulled under a running job);
 #  2. manifest.json + index_{train_val,test}.json -> yqq/data/egotouch_midtrain (scripts/build_egotouch_midtrain_inputs.py);
 #  3. scripts/smoke_test_egotouch_loader.py on 40 train_val sequences -> contact sheet loader_smoke.png.
-# Summary lines start with "EGB|" / "EGS|".
+# Summary lines start with "EGB|" / "EGS|". For the JPEG repack: ROOT=$YQQ/data/EgoTouch_jpeg224 OUT=$YQQ/data/egotouch_midtrain_jpeg.
 set -euo pipefail
 YQQ=/scratch/project/prj-02-uq-llms-for-reasoning/yqq
 source $YQQ/env.sh
 CLONE=$YQQ/N0-VTLA_egotouch
-ROOT=$YQQ/e2c_dl/EgoTouch_hdf5_3view_224
-OUT=$YQQ/data/egotouch_midtrain
+ROOT="${ROOT:-$YQQ/e2c_dl/EgoTouch_hdf5_3view_224}"
+OUT="${OUT:-$YQQ/data/egotouch_midtrain}"
 PY=$YQQ/envs/n0vtla/bin/python
 if [[ ! -d $CLONE/.git ]]; then git clone -q https://github.com/YvonneoO/N0-VTLA.git $CLONE; fi
 cd $CLONE && git pull -q --ff-only && git log -1 --format='EGB|clone at %h %s'

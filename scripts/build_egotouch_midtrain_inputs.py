@@ -7,7 +7,7 @@ Writes into OUT_DIR:
                      mid-train (Ego2Contact's in-distribution test set, available for a held-out check).
   index_<key>.json   [[abs path, frames], ...] for VTLA_ITW_INDEX_CACHE; sequences under 51 frames are left out.
 
-Split files list absolute paths of the machine they were made on; they are rebased onto ROOT by the ROOT folder name.
+Split files list absolute paths of the machine they were made on; they are rebased onto ROOT (<Scene>/<task>/<seq>.hdf5).
 
   python scripts/build_egotouch_midtrain_inputs.py ROOT OUT_DIR [--split-file split_full.json] [--workers 8]
 """
@@ -26,8 +26,10 @@ MIN_FRAMES = 51
 
 
 def rel(p: str, root: Path) -> str:
+    """Split entries are absolute paths of the machine (and build folder) they were made on, or already relative;
+    every sequence sits at <Scene>/<task>/<seq>.hdf5 under its root, so keep those last three components."""
     parts = Path(p).parts
-    return str(Path(*parts[parts.index(root.name) + 1:])) if root.name in parts else str(p)
+    return str(Path(*parts[-3:])) if Path(p).is_absolute() else str(p)
 
 
 def frames(path: str) -> tuple[str, int | None, str]:
