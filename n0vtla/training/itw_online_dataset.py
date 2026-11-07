@@ -369,6 +369,11 @@ def list_episode_dirs(raw_root: str | Path, date_dirs: list[str] | None = None) 
     return episodes
 
 
+def is_egotouch_list(paths) -> bool:
+    """EgoTouch mid-train data = a list of per-sequence .hdf5 files (n0vtla/training/egotouch_online_dataset.py)."""
+    return bool(paths) and all(Path(p).suffix == ".hdf5" for p in paths)
+
+
 def create_stage1_data_loader(
     config,  # n0vtla.training.config.TrainConfig -- not type-hinted to avoid a module-level
              # jax/lerobot import cost for callers (e.g. the smoke test) that only need the
@@ -406,8 +411,16 @@ def create_stage1_data_loader(
     from n0vtla.policies import canonical_tactile_policy
 
     model_cfg = config.model
-    raw_dataset = ITWOnlineTactileDataset(episode_dirs, normalization_path, future_frame_offset=future_frame_offset,
-                                         index_cache=index_cache, pair_shuffle_seed=pair_shuffle_seed)
+    if is_egotouch_list(episode_dirs):
+        from n0vtla.training.egotouch_online_dataset import EgoTouchOnlineTactileDataset
+
+        if pair_shuffle_seed is not None:
+            raise NotImplementedError("pair shuffle is not implemented for EgoTouch")
+        raw_dataset = EgoTouchOnlineTactileDataset(episode_dirs, future_frame_offset=future_frame_offset,
+                                                   index_cache=index_cache)
+    else:
+        raw_dataset = ITWOnlineTactileDataset(episode_dirs, normalization_path, future_frame_offset=future_frame_offset,
+                                             index_cache=index_cache, pair_shuffle_seed=pair_shuffle_seed)
     model_transforms = _config.ModelTransformFactory(default_prompt=default_prompt)(model_cfg)
     dataset = _data.TransformedDataset(raw_dataset, [
         canonical_tactile_policy.Stage1ObservationOnly(model_cfg.action_dim, model_cfg.action_horizon),
@@ -436,5 +449,6 @@ def create_stage1_data_loader(
     )
     # repo_id here is informational only (nothing reads it back) -- kept human-readable for
     # anyone inspecting the returned DataLoaderImpl's data_config() during debugging.
-    data_config = _config.DataConfig(repo_id=f"itw_online:{normalization_path}", model_transforms=model_transforms)
+    source = "egotouch_online" if is_egotouch_list(episode_dirs) else f"itw_online:{normalization_path}"
+    data_config = _config.DataConfig(repo_id=source, model_transforms=model_transforms)
     return _data.DataLoaderImpl(data_config, torch_loader)

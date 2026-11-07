@@ -92,13 +92,13 @@ class IndexEpisodesTests(unittest.TestCase):
     def test_indexes_every_frame_position(self):
         with tempfile.TemporaryDirectory() as tmp:
             ep = _build_episode(Path(tmp) / "ep0")
-            index = index_episodes([ep])
+            kept, sample_ep, sample_t = index_episodes([ep])
             # aligned_timeline's master grid length depends on the common overlap; just
             # check every position 0..n-1 is present exactly once, for exactly this episode.
-            self.assertTrue(all(e == ep for e, _t in index))
-            positions = sorted(t for _e, t in index)
-            self.assertEqual(positions, list(range(len(positions))))
-            self.assertGreater(len(index), 50)
+            self.assertEqual(kept, [ep])
+            self.assertTrue((sample_ep == 0).all())
+            self.assertEqual(sorted(sample_t.tolist()), list(range(len(sample_t))))
+            self.assertGreater(len(sample_t), 50)
 
     def test_skips_bad_episode_without_raising(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -108,14 +108,17 @@ class IndexEpisodesTests(unittest.TestCase):
             _write_camera_csv(bad, "rgb_head", n=90)
             # wrist_left/wrist_right csvs missing entirely -> aligned_timeline raises,
             # index_episodes must skip it rather than propagate.
-            index = index_episodes([good, bad])
-            self.assertTrue(all(e == good for e, _t in index))
+            kept, sample_ep, _sample_t = index_episodes([good, bad])
+            self.assertEqual(kept, [good])
+            self.assertTrue((sample_ep == 0).all())
 
     def test_skips_too_short_episode(self):
         with tempfile.TemporaryDirectory() as tmp:
             short = _build_episode(Path(tmp) / "short", n_frames=10)
-            index = index_episodes([short], min_frames=51)
-            self.assertEqual(index, [])
+            kept, sample_ep, sample_t = index_episodes([short], min_frames=51)
+            self.assertEqual(kept, [])
+            self.assertEqual(len(sample_ep), 0)
+            self.assertEqual(len(sample_t), 0)
 
 
 class ReadTaskAndResizeTests(unittest.TestCase):

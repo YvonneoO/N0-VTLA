@@ -42,6 +42,9 @@ this script never touches config.data):
     VTLA_ITW_PAIR_SHUFFLE_SEED optional int. Ablation: tactile (baseline/current/future) of every sample comes from a
                                 fixed seeded random other sample; RGB stays (visual-tactile correspondence broken).
 Episodes may be in the original tacWAM layout (csv + *_hand_data.npz) or the TouchScale layout (episode.h5).
+EgoTouch: a manifest whose entries are per-sequence .hdf5 files (scripts/build_egotouch_midtrain_inputs.py) selects
+n0vtla/training/egotouch_online_dataset.py; VTLA_ITW_NORMALIZATION is then not needed (EgoTouch grids are already
+normalized) and VTLA_ITW_PAIR_SHUFFLE_SEED is not supported.
 """
 from __future__ import annotations
 
@@ -97,7 +100,7 @@ def _online_episode_dirs(seed: int) -> list[Path]:
             raise ValueError(f"key {list_key!r} not found in {episode_list_json}'s splits "
                               f"(available: {sorted(manifest.get('splits', {}))})") from e
         episodes = [Path(raw_root) / rel for rel in rel_paths]
-        missing = [str(p) for p in episodes if not p.is_dir()]
+        missing = [str(p) for p in episodes if not p.exists()]   # episode dirs, or EgoTouch .hdf5 files
         if missing:
             raise FileNotFoundError(f"{len(missing)} episode dirs from manifest missing under "
                                      f"{raw_root}: {missing[:5]}{'...' if len(missing) > 5 else ''}")
@@ -185,8 +188,8 @@ def train_loop_stage1_online(config: _config.TrainConfig) -> None:
     episode_dirs = _online_episode_dirs(config.seed)
     logging.info(f"stage1 (online): {len(episode_dirs)} episode dirs from VTLA_ITW_RAW_ROOT")
     normalization_path = os.environ.get("VTLA_ITW_NORMALIZATION")
-    if not normalization_path:
-        raise ValueError("VTLA_ITW_NORMALIZATION is required for train_stage1_online.py")
+    if not normalization_path and not _online.is_egotouch_list(episode_dirs):
+        raise ValueError("VTLA_ITW_NORMALIZATION is required for train_stage1_online.py (except for EgoTouch)")
     future_frame_offset = int(os.environ.get("VTLA_STAGE1_FUTURE_OFFSET", "50"))
     default_prompt = os.environ.get("VTLA_DEFAULT_PROMPT", "Perform the task.")
 
