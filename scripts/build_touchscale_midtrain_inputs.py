@@ -50,9 +50,9 @@ def _residuals(args) -> np.ndarray:
     rng = np.random.default_rng(seed)
     out = []
     with h5py.File(Path(ep) / "episode.h5", "r") as f:
-        n = f["obs/tactile/raw/left/t_epoch"].shape[0]
-        take = np.sort(rng.choice(n, size=min(frames_per_ep, n), replace=False))
         for hi, hand in enumerate(ip.HANDS):
+            n = f[f"obs/tactile/raw/{hand}/pad_{ip.PAD_IDS[0]}"].shape[0]   # glove sample counts differ per hand
+            take = np.sort(rng.choice(n, size=min(frames_per_ep, n), replace=False))
             for pi, pad in enumerate(ip.PAD_IDS):
                 r = f[f"obs/tactile/raw/{hand}/pad_{pad}"][take].astype(np.float64) - baseline[hi * 15 + pi]
                 out.append(r[r > 0])
