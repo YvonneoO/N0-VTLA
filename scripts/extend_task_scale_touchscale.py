@@ -45,15 +45,15 @@ def _task_name(ep: Path) -> str:
         return ""
 
 
-def _lengths(ep: str) -> tuple[str, str, list[int] | None]:
+def _lengths(ep: str) -> tuple[str, str, list[int] | None, str]:
     try:
         with h5py.File(Path(ep) / "episode.h5", "r") as f:
-            return ep, _task_name(Path(ep)), [int(f[f"obs/tactile/raw/{h}/t_epoch"].shape[0]) for h in HANDS]
-    except Exception:  # noqa: BLE001
-        return ep, _task_name(Path(ep)), None
+            return ep, _task_name(Path(ep)), [int(f[f"obs/tactile/raw/{h}/t_epoch"].shape[0]) for h in HANDS], ""
+    except Exception as e:  # noqa: BLE001
+        return ep, _task_name(Path(ep)), None, repr(e)[:200]
 
 
-def _residuals(args) -> np.ndarray | None:
+def _residuals(args) -> np.ndarray | str | None:
     ep, idx_per_hand, baseline = args
     out = []
     try:
@@ -67,8 +67,8 @@ def _residuals(args) -> np.ndarray | None:
                     v = raw[np.isfinite(raw)].reshape(-1).astype(np.float64, copy=False)
                     if v.size:
                         out.append(v - baseline[hi * len(PAD_IDS) + slot])
-    except Exception:  # noqa: BLE001
-        return None
+    except Exception as e:  # noqa: BLE001  (tacWAM: recording counted as a failure, not loaded)
+        return repr(e)[:200]
     return np.concatenate(out) if out else None
 
 
@@ -91,7 +91,9 @@ def main() -> None:
         lens = pool.map(_lengths, eps, chunksize=64)
         rng = np.random.default_rng(SEED)
         jobs, names = [], []
-        for ep, name, n in lens:          # draws in uuid order, exactly like tacWAM's sequential loop
+        len_err = [e for _, _, n, e in lens if n is None]
+        print(f"lengths: {len(lens) - len(len_err)} ok, {len(len_err)} failed; first {len_err[:3]}", flush=True)
+        for ep, name, n, _ in lens:          # draws in uuid order, exactly like tacWAM's sequential loop
             if n is None:
                 continue
             per_hand = [np.sort(rng.integers(0, k, size=min(SAMPLES_PER_RECORDING, k), dtype=np.int64)) if k > 0
@@ -102,12 +104,16 @@ def main() -> None:
 
     by_task: dict[str, list[np.ndarray]] = {}
     n_rec: dict[str, int] = {}
+    read_err = [r for r in res if isinstance(r, str)]
+    print(f"reads: {len(read_err)} failed; first {read_err[:3]}", flush=True)
     for name, r in zip(names, res):
-        if r is None:
+        if r is None or isinstance(r, str):
             continue
         by_task.setdefault(name, []).append(r)
         n_rec[name] = n_rec.get(name, 0) + 1
     print(f"recordings: {len(eps)} requested, {sum(n_rec.values())} loaded, {len(by_task)} task names", flush=True)
+    if not n_rec:
+        raise SystemExit("no recording loaded")
 
     scale = {}
     for name, chunks in by_task.items():
@@ -117,6 +123,8 @@ def main() -> None:
             scale[name] = max(float(np.percentile(pos, SCALE_QUANTILE)), MIN_SCALE)
 
     ratio = np.array([scale[t] / table[t] for t in scale if t in table])
+    if ratio.size == 0:
+        raise SystemExit(f"no task name matches the original table; examples {sorted(scale)[:5]}")
     print(f"same procedure on {ratio.size} existing tasks: refit/table median {np.median(ratio):.3f}, "
           f"p10 {np.percentile(ratio, 10):.3f}, p90 {np.percentile(ratio, 90):.3f}, "
           f"min {ratio.min():.3f}, max {ratio.max():.3f}", flush=True)
