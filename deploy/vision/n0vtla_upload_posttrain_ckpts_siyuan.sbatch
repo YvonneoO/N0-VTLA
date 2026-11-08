@@ -12,7 +12,7 @@
 # step only (resume state, ~14 GB), plus wandb_id.txt. Idempotent: files already on HF with the same size are skipped.
 # Run after each training segment: sbatch --dependency=afterany:<segment> --export=ALL,EXP=<exp> <this>
 # README: if the folder's README.md does not mention EXP, the text of NOTE_FILE (path relative to the submit dir) is
-#   appended to it -- never overwritten.
+#   appended to it -- never overwritten (a folder without README gets a new one).
 # Env: EXP (required), PREFIX (default n0vtla_task4_dual_pour_posttrain), NOTE_FILE, EVERY + FINAL (upload only steps that
 #   are multiples of EVERY or FINAL-1, e.g. EVERY=5000 FINAL=40000 with a pruned SAVE=1000 run; unset = every step).
 #   optimizer.pt goes up with the latest uploaded step only if it still has one locally. Lines start with "PTU|".
@@ -27,6 +27,7 @@ $YQQ/envs/n0vtla/bin/python - <<'PYEOF'
 import os, tempfile
 from pathlib import Path
 from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub.utils import EntryNotFoundError
 
 REPO = "qqyang/zihiao_real_test"
 api = HfApi(token=os.environ["HF_TOKEN"])
@@ -70,8 +71,11 @@ if w.is_file():
 note = os.environ["NOTE"].strip()
 if note:
     with tempfile.TemporaryDirectory(dir=str(ck)) as td:
-        readme = Path(hf_hub_download(REPO, f"{prefix}/README.md", repo_type="dataset", token=os.environ["HF_TOKEN"], local_dir=td))
-        text = readme.read_text()
+        try:
+            readme = Path(hf_hub_download(REPO, f"{prefix}/README.md", repo_type="dataset", token=os.environ["HF_TOKEN"], local_dir=td))
+            text = readme.read_text()
+        except EntryNotFoundError:              # new folder: README starts with the note
+            readme, text = Path(td) / "README.md", f"# {prefix}\n"
         if exp not in text:
             readme.write_text(text.rstrip("\n") + "\n\n" + note + "\n")
             api.upload_file(path_or_fileobj=str(readme), path_in_repo=f"{prefix}/README.md", repo_id=REPO, repo_type="dataset",
