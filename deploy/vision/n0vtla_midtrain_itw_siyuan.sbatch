@@ -11,14 +11,15 @@
 #SBATCH --output=/scratch/project/prj-02-uq-llms-for-reasoning/yqq/logs/midtrain_itw_%j.log
 #
 # One SEGMENT of a resumable mid-train (Stage-1 online) run on the raw ITW tree synced from S3 (yqq/data/raw, the
-# old-100% dates; inputs from n0vtla_itw_raw_inputs_siyuan.sbatch). Chain segments with --dependency=afterany:<prev>;
+# inputs from n0vtla_ts_resume_prep_siyuan.sbatch). Chain segments with --dependency=afterany:<prev>;
 # each resumes from the latest checkpoint of EXP_NAME, and one whose run already reached NUM_TRAIN_STEPS exits at once.
-# Required: EXP_NAME. Optional: PAIR_SHUFFLE_SEED (ablation: tactile triplet from another random sample),
-#   SPLIT_KEY(=old100), NUM_TRAIN_STEPS(=20000), SAVE_INTERVAL(=500), NPROC_PER_NODE(=8), BATCH_SIZE (config's 64),
-#   NUM_WORKERS(=2), WANDB(=1), NORM (per-task-scale table, default yqq/data/normalization_pad30_per_task_scale.json).
-#   sbatch --export=ALL,EXP_NAME=itw_old100_shuf0_20k,PAIR_SHUFFLE_SEED=0 deploy/vision/n0vtla_midtrain_itw_siyuan.sbatch
-# smoke: --gres=gpu:2 --cpus-per-task=4 --time=00:40:00 --export=ALL,EXP_NAME=smoke_itw_shuf,PAIR_SHUFFLE_SEED=0,
-#   NPROC_PER_NODE=2,NUM_TRAIN_STEPS=40,SAVE_INTERVAL=20,WANDB=0
+# Required: EXP_NAME, IN (folder with manifest.json + index_<SPLIT_KEY>.json), NORM (per-task-scale table) -- no
+#   defaults, so a run never silently picks up another run's inputs. Optional: PAIR_SHUFFLE_SEED (ablation: tactile
+#   triplet from another random sample), SPLIT_KEY(=old100), NUM_TRAIN_STEPS(=20000; the LR cosine is fixed at 20k
+#   decay steps in the config, so NUM_TRAIN_STEPS=14000 = the 20k schedule stopped at 14k), SAVE_INTERVAL(=500),
+#   NPROC_PER_NODE(=8), BATCH_SIZE (config's 64), NUM_WORKERS(=2), WANDB(=1).
+#   Continue zzh run B: IN/NORM/EXP as printed by n0vtla_ts_resume_prep_siyuan.sbatch (PREP| line), e.g.
+#   sbatch --export=ALL,EXP_NAME=ts_old100_shuf_14k_siyuan,IN=<OUT>,NORM=<NORM>,PAIR_SHUFFLE_SEED=0,NUM_TRAIN_STEPS=14000 ...
 set -uo pipefail
 : "${EXP_NAME:?}"; SPLIT_KEY="${SPLIT_KEY:-old100}"
 YQQ=/scratch/project/prj-02-uq-llms-for-reasoning/yqq
@@ -26,7 +27,8 @@ source $YQQ/env.sh
 PY=$YQQ/envs/n0vtla/bin/python
 CLONE=$YQQ/N0-VTLA_itw
 DATA_ROOT="${DATA_ROOT:-$YQQ/data/raw}"
-IN="${IN:-$YQQ/data/itw_midtrain}"
+: "${IN:?IN = folder with manifest.json + index_<SPLIT_KEY>.json}"; : "${NORM:?NORM = per-task-scale table}"
+[[ -s "$IN/manifest.json" && -s "$IN/index_${SPLIT_KEY}.json" && -s "$NORM" ]] || { echo "missing $IN/manifest.json, $IN/index_${SPLIT_KEY}.json or $NORM"; exit 1; }
 cd $CLONE
 # The env's n0vtla is an EDITABLE install of the live checkout ($YQQ/N0-VTLA); put this clone first so the
 # training imports its own n0vtla package and scripts, not the live checkout's.
@@ -37,7 +39,7 @@ export HF_HOME=$YQQ/N0-VTLA/models/huggingface HF_HUB_OFFLINE=0 TRANSFORMERS_OFF
 export VTLA_ITW_RAW_ROOT=$DATA_ROOT
 export VTLA_ITW_EPISODE_LIST_JSON=$IN/manifest.json VTLA_ITW_EPISODE_LIST_KEY=$SPLIT_KEY
 export VTLA_ITW_INDEX_CACHE=$IN/index_${SPLIT_KEY}.json
-export VTLA_ITW_NORMALIZATION="${NORM:-$YQQ/data/normalization_pad30_per_task_scale.json}"
+export VTLA_ITW_NORMALIZATION="$NORM"
 export VTLA_ITW_PAIR_SHUFFLE_SEED="${PAIR_SHUFFLE_SEED:-}"
 export VTLA_PRETRAINED_CHECKPOINT=$YQQ/data/n0vtla/n0-vtla-base
 NUM_TRAIN_STEPS="${NUM_TRAIN_STEPS:-20000}"; SAVE_INTERVAL="${SAVE_INTERVAL:-500}"
@@ -55,7 +57,7 @@ elif [[ -d "$CKDIR" ]]; then
 fi
 [[ -n "${BATCH_SIZE:-}" ]] && EXTRA+=(--batch-size="$BATCH_SIZE")
 [[ "${WANDB:-1}" == "1" ]] && EXTRA+=(--wandb-enabled)
-echo "=== $EXP_NAME itw split=$SPLIT_KEY shuffle_seed=${PAIR_SHUFFLE_SEED:-none} steps=$NUM_TRAIN_STEPS save=$SAVE_INTERVAL gpus=$NPROC limit=$SLURM_JOB_ID ==="
+echo "=== $EXP_NAME itw split=$SPLIT_KEY shuffle_seed=${PAIR_SHUFFLE_SEED:-none} steps=$NUM_TRAIN_STEPS save=$SAVE_INTERVAL gpus=$NPROC IN=$IN NORM=$NORM limit=$SLURM_JOB_ID ==="
 $PY -m torch.distributed.run --standalone --nnodes=1 --nproc_per_node="$NPROC" \
   scripts/train_stage1_online.py vtla_stage1_predictor_pretrain \
   --exp-name="$EXP_NAME" --num-workers="$NUM_WORKERS" \
