@@ -19,7 +19,8 @@
 #   BS = global batch (default 64; a 1-GPU smoke uses 8 = the per-GPU batch of the 8-GPU run)
 #   Task4 dual, EgoTouch mid-train init (same recipe as the post92traj40k ours runs):
 #   --export=ALL,TASK=task4,DUALSET=post92traj,SUFFIX=realtac,PRETRAINED=$YQQ/data/n0vtla/n0-vtla-base_plus_stage1_egotouch_20000,
-#     EXP_NAME_OVERRIDE=task4_posttrain_egt20k_realtac_post92traj40k_vision8gpu,STEPS=40000,LRD=40000,SAVE=5000,RESUME=auto
+#     EXP_NAME_OVERRIDE=task4_posttrain_egt14k_realtac_post92traj40k_vision8gpu,STEPS=40000,LRD=40000,SAVE=1000,PRUNE_KEEP=5000,RESUME=auto
+#   with short backfill segments: sbatch --time=03:00:00 --time-min=01:30:00 ... (chain with --dependency=afterany)
 set -uo pipefail
 : "${TASK:?TASK must be task1, sv2, task3 or task4}"
 SUFFIX="${SUFFIX:-predtac}"
@@ -72,7 +73,26 @@ elif [ -n "${RESUME:-}" ]; then RFLAG="--resume"; fi
 # LRD: cosine decay length (config default 20000). For a run longer than 20k steps (segmented/resumed) EVERY segment must use the same LRD, else the LR
 # would sit flat at decay_lr after step 20000 or jump between segments.
 LRFLAG=""; [ -n "${LRD:-}" ] && LRFLAG="--lr-schedule.decay-steps=$LRD"
+# PRUNE_KEEP=N (backfill-friendly short segments with a small SAVE): train_pytorch keeps every save (~22 GB each), so
+# before, during (every 10 min) and after training, every step older than the latest is pruned: multiples of N and
+# STEPS-1 (the eval/upload points, as the 5000-step runs keep) lose only optimizer.pt, all other steps are removed.
+# The latest complete step (saves are atomic: tmp_<step> renamed) is always kept whole for --resume.
+prune() {
+  [ -n "${PRUNE_KEEP:-}" ] && [ -d "$CKD" ] || return 0
+  local latest d st
+  latest=$(ls -d "$CKD"/[0-9]* 2>/dev/null | xargs -r -n1 basename | sort -n | tail -1)
+  [ -n "$latest" ] || return 0
+  for d in "$CKD"/[0-9]*; do
+    st=$(basename "$d"); [ "$st" = "$latest" ] && continue
+    if (( st % PRUNE_KEEP == 0 || st == ${STEPS:-20000} - 1 )); then rm -f "$d/optimizer.pt"; else rm -rf "$d"; echo "PRUNE|removed step $st"; fi
+  done
+}
+prune
+PRUNER=""
+if [ -n "${PRUNE_KEEP:-}" ]; then ( while sleep 600; do prune; done ) & PRUNER=$!; fi
 bash train.sh --batch-size=${BS:-64} --num-train-steps=${STEPS:-20000} --save-interval=${SAVE:-5000} $LRFLAG $RFLAG
 RC=$?
+[ -n "$PRUNER" ] && kill "$PRUNER" 2>/dev/null
+prune
 echo "=== TRAINING SCRIPT EXITED ($EXP_NAME) rc=$RC ==="
 exit $RC

@@ -13,11 +13,14 @@
 # Run after each training segment: sbatch --dependency=afterany:<segment> --export=ALL,EXP=<exp> <this>
 # README: if the folder's README.md does not mention EXP, the text of NOTE_FILE (path relative to the submit dir) is
 #   appended to it -- never overwritten.
-# Env: EXP (required), PREFIX (default n0vtla_task4_dual_pour_posttrain), NOTE_FILE. Lines start with "PTU|".
+# Env: EXP (required), PREFIX (default n0vtla_task4_dual_pour_posttrain), NOTE_FILE, EVERY + FINAL (upload only steps that
+#   are multiples of EVERY or FINAL-1, e.g. EVERY=5000 FINAL=40000 with a pruned SAVE=1000 run; unset = every step).
+#   optimizer.pt goes up with the latest uploaded step only if it still has one locally. Lines start with "PTU|".
 set -euo pipefail
 : "${EXP:?}"
 YQQ=/scratch/project/prj-02-uq-llms-for-reasoning/yqq
 set +u; source $YQQ/env.sh; set -u
+export EVERY="${EVERY:-}" FINAL="${FINAL:-0}"
 export CKDIR=$YQQ/N0-VTLA/checkpoints/vtla_tactile_posttrain/$EXP PREFIX="${PREFIX:-n0vtla_task4_dual_pour_posttrain}"
 export NOTE=""; [[ -n "${NOTE_FILE:-}" ]] && NOTE="$(cat "$SLURM_SUBMIT_DIR/$NOTE_FILE")"
 $YQQ/envs/n0vtla/bin/python - <<'PYEOF'
@@ -31,7 +34,11 @@ assert api.whoami()["name"] == "qqyang", "HF token is not qqyang"
 ck, prefix, exp = Path(os.environ["CKDIR"]), os.environ["PREFIX"], os.environ["EXP"]
 steps = sorted((p for p in ck.iterdir() if p.is_dir() and p.name.isdigit()
                 and (p / "model.safetensors").is_file() and (p / "metadata.pt").is_file()), key=lambda p: int(p.name))
-assert steps, f"no complete step in {ck}"
+every, final = int(os.environ["EVERY"] or 0), int(os.environ["FINAL"])
+if every:
+    steps = [p for p in steps if int(p.name) % every == 0 or int(p.name) == final - 1]
+if not steps:
+    print(f"PTU|no complete step to upload yet in {ck}"); print("PT_UPLOAD_DONE"); raise SystemExit(0)
 last = steps[-1].name
 
 def remote_sizes(paths):
@@ -70,6 +77,6 @@ if note:
             api.upload_file(path_or_fileobj=str(readme), path_in_repo=f"{prefix}/README.md", repo_id=REPO, repo_type="dataset",
                             commit_message=f"README: add {exp}")
             print("PTU|README: note appended", flush=True)
-print(f"PTU|{exp}: {len(steps)} steps on HF (latest {last} with optimizer.pt) -> https://huggingface.co/datasets/{REPO}/tree/main/{prefix}/{exp}")
+print(f"PTU|{exp}: {len(steps)} steps on HF (latest {last}) -> https://huggingface.co/datasets/{REPO}/tree/main/{prefix}/{exp}")
 print("PT_UPLOAD_DONE")
 PYEOF
