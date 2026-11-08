@@ -4,17 +4,19 @@
 # (RESUME=auto; a segment after completion exits at once), each followed (afterany) by an incremental HF upload of the
 # steps that are multiples of 2000 or 19999 to qqyang/zihiao_real_test:n0vtla_singlearm_egt14k_posttrain/<exp>/.
 # Runs on the VISION login node (only calls sbatch); $(...) is evaluated by THIS bash on VISION.
-#   bash deploy/vision/n0vtla_submit_egt14k_singlearm_siyuan.sh "sv2 task1 task2 task3" [NSEG=6]
+#   bash deploy/vision/n0vtla_submit_egt14k_singlearm_siyuan.sh "st task1 task2 task3" [NSEG=6] [FIRST_AFTER=<jobid>]
+#   FIRST_AFTER: the first segment of each task waits (afterany) for that job, e.g. the last segment of another chain (GPU cap).
 set -euo pipefail
 TASKS="${1:?tasks, e.g. \"sv2 task1 task2 task3\"}"
 NSEG="${2:-6}"
+FIRST_AFTER="${3:-}"
 YQQ=/scratch/project/prj-02-uq-llms-for-reasoning/yqq
 cd $YQQ/N0-VTLA_egotouch
 PRE=$YQQ/data/n0vtla/n0-vtla-base_plus_stage1_egotouch_14000
 [[ -s "$PRE/model.safetensors" ]] || { echo "missing $PRE"; exit 1; }
 for t in $TASKS; do
   exp="${t}_posttrain_egt14k_realtac_vision8gpu"
-  prev=""
+  prev="$FIRST_AFTER"
   for i in $(seq 1 "$NSEG"); do
     args=(--parsable --time=03:00:00 --time-min=01:30:00 --job-name="egt14k_${t}"
           --export="ALL,TASK=${t},SUFFIX=realtac,PRETRAINED=${PRE},EXP_NAME_OVERRIDE=${exp},STEPS=20000,LRD=20000,SAVE=1000,PRUNE_KEEP=2000,RESUME=auto")
