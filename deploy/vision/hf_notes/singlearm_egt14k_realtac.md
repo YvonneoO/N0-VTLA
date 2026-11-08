@@ -5,3 +5,5 @@ datasets `canonical_wetlab_<task>_train`, bs64 on 8 GPUs, 20000 steps, cosine ov
 on **EgoTouch** (`n0vtla_egotouch_midtrain/egt_20k/14000`, merged) instead of the human ITW mid-train
 (`n0-vtla-base_plus_stage1_human_14000`). Steps kept: every 2000 and 19999; `optimizer.pt` only for the latest step of each
 training segment.
+Runs: `sv2_posttrain_egt14k_realtac_vision8gpu`, `task1_posttrain_egt14k_realtac_vision8gpu`,
+`task2_posttrain_egt14k_realtac_vision8gpu`, `task3_posttrain_egt14k_realtac_vision8gpu`.
