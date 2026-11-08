@@ -16,6 +16,10 @@
 #   SUFFIX = predtac (dataset suffix written by robot_ft_predtac_build.sbatch)
 #   STEPS  = 20000 (smoke: 20)     SAVE = 5000      RESUME=1 to resume, RESUME=auto to resume only if a checkpoint exists (else start fresh)
 #   sbatch --job-name=task1 --export=ALL,TASK=task1 deploy/vision/n0vtla_posttrain_predtac_siyuan.sbatch
+#   BS = global batch (default 64; a 1-GPU smoke uses 8 = the per-GPU batch of the 8-GPU run)
+#   Task4 dual, EgoTouch mid-train init (same recipe as the post92traj40k ours runs):
+#   --export=ALL,TASK=task4,DUALSET=post92traj,SUFFIX=realtac,PRETRAINED=$YQQ/data/n0vtla/n0-vtla-base_plus_stage1_egotouch_20000,
+#     EXP_NAME_OVERRIDE=task4_posttrain_egt20k_realtac_post92traj40k_vision8gpu,STEPS=40000,LRD=40000,SAVE=5000,RESUME=auto
 set -uo pipefail
 : "${TASK:?TASK must be task1, sv2, task3 or task4}"
 SUFFIX="${SUFFIX:-predtac}"
@@ -68,7 +72,7 @@ elif [ -n "${RESUME:-}" ]; then RFLAG="--resume"; fi
 # LRD: cosine decay length (config default 20000). For a run longer than 20k steps (segmented/resumed) EVERY segment must use the same LRD, else the LR
 # would sit flat at decay_lr after step 20000 or jump between segments.
 LRFLAG=""; [ -n "${LRD:-}" ] && LRFLAG="--lr-schedule.decay-steps=$LRD"
-bash train.sh --batch-size=64 --num-train-steps=${STEPS:-20000} --save-interval=${SAVE:-5000} $LRFLAG $RFLAG
+bash train.sh --batch-size=${BS:-64} --num-train-steps=${STEPS:-20000} --save-interval=${SAVE:-5000} $LRFLAG $RFLAG
 RC=$?
 echo "=== TRAINING SCRIPT EXITED ($EXP_NAME) rc=$RC ==="
 exit $RC
