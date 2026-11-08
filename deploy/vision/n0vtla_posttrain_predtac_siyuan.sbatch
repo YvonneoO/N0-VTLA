@@ -12,7 +12,7 @@
 # see Ego2Contact scripts/tools/robot_ft_predtac_build.sbatch). Same recipe as task1_posttrain_ours_vision8gpu / sv2 (bs64 on 8 GPUs, config
 # default lr schedule, init = Stage-1 human-data mid-train merged into the base) -- only the tactile VIDEOS of the dataset differ (state, action,
 # RGB, episodes, norm_stats are identical to the real-tactile datasets, so the same asset id is used).
-#   TASK   = task1 | task2 | sv2 | task3 | task4
+#   TASK   = task1 | task2 | sv2 | st | task3 | task4   (st = the original smoke_test, sv2 = smoke_test_v2)
 #   SUFFIX = predtac (dataset suffix written by robot_ft_predtac_build.sbatch); realtac = the real-glove datasets (no suffix for single-arm)
 #   STEPS  = 20000 (smoke: 20)     SAVE = 5000      RESUME=1 to resume, RESUME=auto to resume only if a checkpoint exists (else start fresh)
 #   sbatch --job-name=task1 --export=ALL,TASK=task1 deploy/vision/n0vtla_posttrain_predtac_siyuan.sbatch
@@ -25,7 +25,7 @@
 #   --export=ALL,TASK=task1,SUFFIX=realtac,PRETRAINED=...egotouch_14000,EXP_NAME_OVERRIDE=task1_posttrain_egt14k_realtac_vision8gpu,
 #     STEPS=20000,LRD=20000,SAVE=1000,PRUNE_KEEP=2000,RESUME=auto
 set -uo pipefail
-: "${TASK:?TASK must be task1, task2, sv2, task3 or task4}"
+: "${TASK:?TASK must be task1, task2, sv2, st, task3 or task4}"
 SUFFIX="${SUFFIX:-predtac}"
 YQQ="${YQQ:-/scratch/project/prj-02-uq-llms-for-reasoning/yqq}"   # other account: --export=ALL,YQQ=<its yqq> --account=<its account> --output=<its logs>
 cd $YQQ/N0-VTLA
@@ -43,6 +43,7 @@ case "$TASK" in
   task1) export VTLA_DATASET_PATH="$DATA_ROOT/canonical_wetlab_task1${S}_train"; export VTLA_ASSET_ID=task1_tuberack_train ;;
   task2) export VTLA_DATASET_PATH="$DATA_ROOT/canonical_wetlab_task2${S}_train"; export VTLA_ASSET_ID=task2_softhardsort_train ;;
   sv2)   export VTLA_DATASET_PATH="$DATA_ROOT/canonical_wetlab_smoketestv2${S}_train"; export VTLA_ASSET_ID=wetlab_smoketestv2_train ;;
+  st)    export VTLA_DATASET_PATH="$DATA_ROOT/canonical_wetlab_smoketest${S}_train"; export VTLA_ASSET_ID=wetlab_smoketest_train ;;   # original smoke_test (cap_to_tray), n0vtla_smoketest_build_siyuan.sbatch
   task3) export VTLA_DATASET_PATH="$DATA_ROOT/canonical_wetlab_task3${S}_train"; export VTLA_ASSET_ID=task3_whiteboard_train ;;
   task4) DSET="${DUALSET:-post42}"   # post42 = the 42 batch-1 post-train episodes; post92 = those + the 50 batch-2 episodes
          export VTLA_DATASET_PATH="$DATA_ROOT/canonical_wetlab_task4_dual_${DSET}_${SUFFIX}"; export VTLA_ASSET_ID=task4_dual_pour_${DSET} ;;   # dual-arm, 42 post-train episodes (dual42 plan)
