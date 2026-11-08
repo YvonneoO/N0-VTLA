@@ -7,6 +7,9 @@ Writes into OUT_DIR:
                      segment do not re-align ~40k episodes.
 DATES default: the dates of docs/artifacts/itw_scaling_splits.json (the old 100%, itw07-23..itw09-15).
 Also prints the per-task-scale coverage of NORM (fraction of episodes whose task has its own scale).
+--episode-list MANIFEST.json [--list-key K]: keep only episodes whose uuid (last path component) is in that manifest's
+  splits[K] (e.g. the zzh TouchScale old100 list, to continue a zzh run on this copy); the dates then default to the
+  dates of those episodes, and the number of listed uuids not found here is reported.
 
   python scripts/build_itw_raw_midtrain_inputs.py ROOT OUT_DIR --norm NORM.json [--key old100] [--workers 16]
 """
@@ -44,11 +47,25 @@ def main() -> None:
     ap.add_argument("--key", default="old100")
     ap.add_argument("--dates", nargs="*", default=None)
     ap.add_argument("--workers", type=int, default=16)
+    ap.add_argument("--episode-list", type=Path, default=None)
+    ap.add_argument("--list-key", default="old100")
     args = ap.parse_args()
+    keep = None
+    if args.episode_list is not None:
+        listed = json.loads(args.episode_list.read_text())["splits"][args.list_key]
+        keep = {Path(r).name for r in listed}
+        list_dates = sorted({d for r in listed for d in Path(r).parts if d.startswith("itw")})
+        print(f"ITB|episode list {args.episode_list}[{args.list_key}]: {len(listed)} entries, {len(keep)} uuids, "
+              f"dates {list_dates}", flush=True)
     old = json.loads(OLD_MANIFEST.read_text())
-    dates = args.dates or sorted({p.split("/")[0] for v in old["splits"].values() for p in v})
+    dates = args.dates or (list_dates if keep is not None and list_dates else
+                           sorted({p.split("/")[0] for v in old["splits"].values() for p in v}))
     missing_dates = [d for d in dates if not (args.root / d).is_dir()]
     eps = D.list_episode_dirs(args.root, date_dirs=[d for d in dates if d not in missing_dates])
+    if keep is not None:
+        here = {e.name for e in eps}
+        eps = [e for e in eps if e.name in keep]
+        print(f"ITB|kept {len(eps)} episode dirs from the list; {len(keep - here)} listed uuids not found here", flush=True)
     print(f"ITB|{len(dates)} dates ({len(missing_dates)} missing: {missing_dates}), {len(eps)} episode dirs", flush=True)
     with Pool(args.workers) as pool:
         res = pool.map(frames, [str(e) for e in eps], chunksize=32)
@@ -65,7 +82,8 @@ def main() -> None:
     manifest = {"raw_root": str(args.root), "splits": {args.key: rel}, "dates": dates, "missing_dates": missing_dates,
                 "summary": {"episodes": len(rel), "frames": frames_total, "hours": frames_total / 30 / 3600,
                             "skipped": len(bad), "per_date": dict(per_date), "task_scale_coverage": cov},
-                "note": "raw tacWAM-layout ITW synced from S3 (no depth); key = every aligned episode on these dates"}
+                "note": "raw tacWAM-layout ITW synced from S3 (no depth); key = every aligned episode on these dates"
+                        + (f", restricted to the uuids of {args.episode_list}[{args.list_key}]" if keep is not None else "")}
     (args.out_dir / "manifest.json").write_text(json.dumps(manifest))
     print(f"ITB|{args.key}: {len(rel)} episodes, {frames_total} samples = {frames_total / 30 / 3600:.1f} h; "
           f"task-scale coverage {cov}", flush=True)
