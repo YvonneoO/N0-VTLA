@@ -23,7 +23,8 @@ PRE="${PRE:-$YQQ/data/n0vtla/n0-vtla-base_plus_stage1_egotouch_14000}"
 HFPREFIX="${HFPREFIX:-n0vtla_singlearm_${TAG}_posttrain}"
 NOTE="${NOTE:-deploy/vision/hf_notes/singlearm_${TAG}_realtac.md}"
 UP_EVERY="${UP_EVERY:-2000}"; UP_FINAL="${UP_FINAL:-20000}"
-[[ -s "$PRE/model.safetensors" ]] || { echo "missing $PRE"; exit 1; }
+# with an afterok first dependency (a smoke that loads PRE) PRE may still be in the making (merge job queued)
+[[ -s "$PRE/model.safetensors" || "$FIRST_AFTER" == afterok:* ]] || { echo "missing $PRE"; exit 1; }
 [[ -f "$NOTE" ]] || { echo "missing $NOTE"; exit 1; }
 dep() { [[ "$1" == *:* ]] && echo "$1" || echo "afterany:$1"; }
 for group in $GROUPS_; do
