@@ -13,6 +13,8 @@
 # Meant to run after each training segment: sbatch --dependency=afterany:<segment> --export=ALL,EXP_NAME=egt_20k ...
 # Env: EXP_NAME (required), CLONE (default yqq/N0-VTLA_egotouch), REPO (default qqyang/zihiao_real_test),
 #      PREFIX (default n0vtla_egotouch_midtrain/<EXP_NAME>), MANIFEST (default yqq/data/egotouch_midtrain_jpeg/manifest.json).
+#      ONLY_STEPS (space-separated step numbers; default all), EXTRAS (default 1; 0 = do not upload wandb_id.txt / manifest,
+#      e.g. when adding a step to a folder whose run was started on another account).
 # Lines start with "UPL|".
 set -euo pipefail
 : "${EXP_NAME:?}"
@@ -21,6 +23,7 @@ set +u; source $YQQ/env.sh; set -u
 export CKDIR="${CLONE:-$YQQ/N0-VTLA_egotouch}/checkpoints/vtla_stage1_predictor_pretrain/$EXP_NAME"
 export REPO="${REPO:-qqyang/zihiao_real_test}" PREFIX="${PREFIX:-n0vtla_egotouch_midtrain/$EXP_NAME}"
 export MANIFEST="${MANIFEST:-$YQQ/data/egotouch_midtrain_jpeg/manifest.json}"
+export ONLY_STEPS="${ONLY_STEPS:-}" EXTRAS="${EXTRAS:-1}"
 $YQQ/envs/n0vtla/bin/python - <<'PYEOF'
 import os
 from pathlib import Path
@@ -35,6 +38,10 @@ def remote_sizes(paths):
     return {i.path: i.size for i in api.get_paths_info(repo, paths, repo_type="dataset") if getattr(i, "size", None) is not None}
 
 steps = sorted((p for p in ck.iterdir() if p.is_dir() and p.name.isdigit()), key=lambda p: int(p.name))
+only = set(os.environ["ONLY_STEPS"].split())
+if only:
+    steps = [p for p in steps if p.name in only]
+    print(f"UPL|ONLY_STEPS {sorted(only, key=int)} -> {[p.name for p in steps]}", flush=True)
 done, skipped, uploaded = [], [], []
 for s in steps:
     files = {f.name: f.stat().st_size for f in s.iterdir() if f.is_file()}
@@ -50,6 +57,8 @@ for s in steps:
     uploaded.append(s.name)
     print(f"UPL|uploaded step {s.name} ({sum(files.values()) / 2**30:.2f} GiB), verified", flush=True)
 extra = [(ck / "wandb_id.txt", f"{prefix}/wandb_id.txt"), (Path(os.environ["MANIFEST"]), f"{prefix}/data_manifest.json")]
+if os.environ["EXTRAS"] == "0":
+    extra = []
 for local, remote in extra:
     if local.exists():
         api.upload_file(path_or_fileobj=str(local), path_in_repo=remote, repo_id=repo, repo_type="dataset",
