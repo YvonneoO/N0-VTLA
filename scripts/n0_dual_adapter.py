@@ -11,10 +11,12 @@ canonical bimanual layout it already reserves (n0vtla/policies/canonical_schema.
   [26:32] left Revo2 6 motor targets (0..1000)    -- the remaining reserved dims
 
 Images: third_view <- rgb_head, left_wrist_view <- wrist_left, right_wrist_view <- wrist_right
-(224x224 aspect-preserving letterbox, as the single-arm adapter). Tactile: the Tujian glove on
-the robot RIGHT hand is stored as left_hand_data.npz (crossed) -> right_wrist_right_tactile,
-hand="right"; the glove on the robot LEFT hand is right_hand_data.npz -> left_wrist_left_tactile,
-hand="left" (mirrored layout). Normalization slots: left hand 0..14, right hand 15..29.
+(224x224 aspect-preserving letterbox, as the single-arm adapter). Tactile: the robot RIGHT hand's
+glove -> right_wrist_right_tactile, hand="right"; the robot LEFT hand's glove ->
+left_wrist_left_tactile, hand="left" (mirrored layout). Which archive holds which robot hand depends
+on the release (TASK_PROFILES, keyed by robot/manifest.json task.name): the tube-pour batches are
+crossed (robot right hand = left_hand_data.npz), the USB-plug batches are straight (each release's
+admission_index.json glove_mapping). Normalization slots: left hand 0..14, right hand 15..29.
 
 State and action follow the single-arm contract: absolute last-issued commands (state = the
 command in force at t, action = the commands at t..t+49; the loader's delta transform subtracts
@@ -46,7 +48,16 @@ LAYOUT = "dual_eef_mm_columns6d_left_0_9_right_10_19_revo2_right_20_26_left_26_3
 SIDES = ("right", "left")
 ARM_SLOT = {"left": (0, 3, 9), "right": (10, 13, 19)}          # xyz lo, rot lo, rot hi
 HAND_SLOT = {"right": (20, 26), "left": (26, 32)}
-GLOVE_FILE = {"right": "left_hand_data.npz", "left": "right_hand_data.npz"}   # robot hand -> archive
+GLOVE_FILE = {"right": "left_hand_data.npz", "left": "right_hand_data.npz"}   # robot hand -> archive (tube pour, crossed)
+USB_TASK = ("Right hand takes the USB hub from its stand and holds it on the midline; left hand picks up the USB "
+            "drive, plugs it fully into the hub's port and lets go; the right hand puts the hub back and both hands "
+            "open and withdraw.")
+# manifest task.name -> task string + robot hand -> glove archive. The prompt the policy trains on is the data
+# config's default_prompt ("Perform the task."), not this string; it only labels tasks.jsonl.
+TASK_PROFILES = {
+    "tube_pour_dual": dict(task=TASK, glove_file=GLOVE_FILE),
+    "usb_plug_dual": dict(task=USB_TASK, glove_file={"right": "right_hand_data.npz", "left": "left_hand_data.npz"}),
+}
 TACTILE_KEY = {"right": "observation.image.right_wrist_right_tactile",
                "left": "observation.image.left_wrist_left_tactile"}
 RGB_KEY = {"rgb_head": "observation.image.third_view", "wrist_left": "observation.image.left_wrist_view",
@@ -125,8 +136,10 @@ def resolve_dual_window(source):
     source = Path(source)
     manifest = json.loads((source / "robot/manifest.json").read_text())
     note = json.loads((source / "operator_note.json").read_text())
-    if manifest["task"]["name"] != "tube_pour_dual" or note.get("success") is not True:
-        raise ValueError("Expected a successful tube_pour_dual trial")
+    profile = TASK_PROFILES.get(manifest["task"]["name"])
+    if profile is None or note.get("success") is not True:
+        raise ValueError(f"Expected a successful trial of {sorted(TASK_PROFILES)}, got {manifest['task']['name']}")
+    glove_file = profile["glove_file"]
     with h5py.File(source / "episode_30hz.h5", "r") as f:
         t = f["time/timestamp_ns"][:]
         valid = (t >= manifest["trial"]["engaged_host_ns"]) & (t < manifest["trial"]["released_host_ns"])
@@ -172,12 +185,12 @@ def resolve_dual_window(source):
             video[name] = ids
         tactile = {}
         for s in SIDES:
-            with np.load(source / GLOVE_FILE[s], allow_pickle=False) as z:
+            with np.load(source / glove_file[s], allow_pickle=False) as z:
                 ti, _, tv = causal_indices(np.rint(z["timestamps"] * 1e9), t, TACTILE_AGE_NS)
             valid &= tv
             tactile[s] = ti
     return dict(manifest=manifest, t=t, valid=valid, runs=contiguous_runs(valid), arm=arm, hand=hand,
-                src=src, video=video, tactile=tactile, engaged=engaged)
+                src=src, video=video, tactile=tactile, engaged=engaged, task=profile["task"], glove_file=glove_file)
 
 
 def fit_dual_pressure(source, window, rows):
@@ -256,10 +269,10 @@ def write_windows(source, window, groups, output, first_episode, first_index, no
             nbytes += write_rgb(source / f"{name}.mp4", output / "videos/chunk-000" / key / f"episode_{e:06d}.mp4",
                                 window["video"][name][g])
         for s in SIDES:
-            nbytes += write_pressure_video(source / GLOVE_FILE[s],
+            nbytes += write_pressure_video(source / window["glove_file"][s],
                                            output / "videos/chunk-000" / TACTILE_KEY[s] / f"episode_{e:06d}.mp4",
                                            window["tactile"][s][g], norm, hand=s)
-        episodes.append(dict(episode_index=e, tasks=[TASK], length=n))
+        episodes.append(dict(episode_index=e, tasks=[window["task"]], length=n))
         stats.append(dict(episode_index=e, stats={c: _quantile_stats(v) for c, v in cols.items()}))
         total += n
     return episodes, stats, total, nbytes
@@ -273,7 +286,7 @@ def write_meta(output, episodes, stats, total, nbytes, robot_type):
     meta.mkdir(parents=True, exist_ok=True)
     _write_jsonl(meta / "episodes.jsonl", episodes)
     _write_jsonl(meta / "episodes_stats.jsonl", stats)
-    _write_jsonl(meta / "tasks.jsonl", [dict(task_index=0, task=TASK)])
+    _write_jsonl(meta / "tasks.jsonl", [dict(task_index=0, task=episodes[0]["tasks"][0] if episodes else TASK)])
     info = _info_json(len(episodes), total, nbytes, 0, VIDEO_KEYS)
     info["robot_type"] = robot_type
     (meta / "info.json").write_text(json.dumps(info, indent=2))

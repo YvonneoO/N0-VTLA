@@ -1,8 +1,9 @@
-"""Fit ONE shared pad30 tactile normalization for the dual-arm Task 4 TRAIN split.
+"""Fit ONE shared pad30 tactile normalization for a dual-arm TRAIN split (Task 4 pour, USB plug).
 
 Slots follow itw_pressure.HANDS = ("left", "right"): slots 0..14 = the robot LEFT hand's
-glove (stored as right_hand_data.npz), slots 15..29 = the robot RIGHT hand's glove (stored as
-left_hand_data.npz) -- the release's tactile files are crossed, see n0_dual_adapter.GLOVE_FILE.
+glove, slots 15..29 = the robot RIGHT hand's glove. Which archive holds which robot hand is the
+release's own mapping (crossed for the pour batches, straight for USB plug), see
+n0_dual_adapter.TASK_PROFILES.
 Each hand is fitted independently (the right-hand glove responds markedly weaker, so a shared
 fit would crush it). Same P5/P99.9 method as fit_wetlab_tactile_norm.py; samples are drawn only
 from each episode's own legal dual-arm rows (n0_dual_adapter.resolve_dual_window).
@@ -39,7 +40,7 @@ def fit(episode_dirs: list[Path], *, samples_per_recording: int, seed: int) -> t
         for s in nd.SIDES:
             frames = np.unique(w["tactile"][s][rows])
             take = frames[rng.integers(0, len(frames), size=min(samples_per_recording, len(frames)))]
-            with np.load(ep / nd.GLOVE_FILE[s], allow_pickle=False) as z:
+            with np.load(ep / w["glove_file"][s], allow_pickle=False) as z:
                 std = max(float(np.std(np.asarray(z[f"tactile_{p}"], np.float64)[frames])) for p in PAD_IDS)
                 if std < LIVE_STD_THRESHOLD:
                     dead[s].append(ep.name)

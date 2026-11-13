@@ -99,7 +99,10 @@ def merge(per_source: list[tuple[str, Path, dict]], output: Path) -> dict:
     meta = output / "meta"
     _write_jsonl(meta / "episodes.jsonl", ep_out)
     _write_jsonl(meta / "episodes_stats.jsonl", st_out)
-    _write_jsonl(meta / "tasks.jsonl", [dict(task_index=0, task=nd.TASK)])
+    tasks = sorted({t for ep in ep_out for t in ep["tasks"]})
+    if len(tasks) > 1:
+        raise ValueError(f"one dataset must hold one task, got {tasks}")
+    _write_jsonl(meta / "tasks.jsonl", [dict(task_index=0, task=tasks[0] if tasks else nd.TASK)])
     _write_jsonl(meta / "per_source_audit.jsonl", audits)
     info = _info_json(g_ep, g_idx, data_bytes, video_bytes, nd.VIDEO_KEYS)
     info["robot_type"] = "xarm6_revo2_dual"

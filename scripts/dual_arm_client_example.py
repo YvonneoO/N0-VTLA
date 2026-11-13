@@ -100,7 +100,7 @@ def main() -> None:
     client = DualArmClient(WebsocketClientPolicy(args.host, args.port), norm)
     client.reset()
     caps = {n: cv2.VideoCapture(str(args.package / f"{n}.mp4")) for n in nd.RGB_KEY}
-    glove = {s: np.load(args.package / nd.GLOVE_FILE[s], allow_pickle=False) for s in nd.SIDES}
+    glove = {s: np.load(args.package / w["glove_file"][s], allow_pickle=False) for s in nd.SIDES}
 
     def frame(name, idx):
         caps[name].set(cv2.CAP_PROP_POS_FRAMES, int(idx))
