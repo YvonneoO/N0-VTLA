@@ -20,14 +20,22 @@ set +u; source $YQQ/env.sh; set -u
 export PREFIX="${PREFIX:-n0vtla_touchscale_midtrain/$SRC_EXP}" STEP
 export DEST=$YQQ/data/ts_resume/$SRC_EXP/hf
 $YQQ/envs/n0vtla/bin/python - <<'PYEOF'
-import os
+import os, time
 from pathlib import Path
 from huggingface_hub import HfApi, snapshot_download
 api = HfApi(token=os.environ["HF_TOKEN"])
 assert api.whoami()["name"] == "qqyang", "HF token is not qqyang"
 repo, prefix, step, dest = "qqyang/zihiao_real_test", os.environ["PREFIX"], os.environ["STEP"], os.environ["DEST"]
-snapshot_download(repo, repo_type="dataset", token=os.environ["HF_TOKEN"], local_dir=dest,
-                  allow_patterns=[f"{prefix}/{step}/*", f"{prefix}/*.json"])
+for attempt in range(6):   # HF 429 (token rate limit, e.g. while a big download runs on the same token): pause and retry
+    try:
+        snapshot_download(repo, repo_type="dataset", token=os.environ["HF_TOKEN"], local_dir=dest, max_workers=2,
+                          allow_patterns=[f"{prefix}/{step}/*", f"{prefix}/*.json"])
+        break
+    except Exception as e:
+        if attempt == 5:
+            raise
+        print(f"FM|attempt {attempt + 1} failed ({type(e).__name__}: {str(e)[:120]}), retry in 5 min", flush=True)
+        time.sleep(300)
 d = Path(dest) / prefix / step
 remote = {i.path.split("/")[-1]: i.size for i in api.get_paths_info(repo, [f"{prefix}/{step}/{n}" for n in ("model.safetensors", "optimizer.pt", "metadata.pt")], repo_type="dataset")}
 local = {n: (d / n).stat().st_size for n in remote if (d / n).exists()}
