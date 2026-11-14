@@ -5,4 +5,4 @@ crossed as in the pour batches), one dataset episode per trajectory (`canonical_
 `usb_plug_dual_post100traj`, tactile norm fitted on these 100). Same recipe as the task4 post92traj40k runs: bs64 on 8 GPUs,
 40000 steps, cosine over 40000. Init = `n0-vtla-base` + Stage-1 mid-train on the full TouchScale human ITW corpus
 (`n0vtla_touchscale_midtrain/ts_all_20k/20000`, merged). Push-ramp frames are kept (the post-train loss does not read
-`action_mask`). Only the final step (40000, with `optimizer.pt`) is uploaded.
+`action_mask`). Uploaded steps: 10000, 20000, 30000 (weights only) and 40000 (with `optimizer.pt`).
